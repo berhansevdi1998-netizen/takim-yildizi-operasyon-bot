@@ -60,12 +60,13 @@ def veritabani_hazirla():
                     kargo_ucreti NUMERIC(15,2)
                 )
             """)
-cur.execute("""
-    ALTER TABLE siparisler
-    ADD COLUMN IF NOT EXISTS odeme_tipi TEXT
-""")
-    conn.commit()
 
+            cur.execute("""
+                ALTER TABLE siparisler
+                ADD COLUMN IF NOT EXISTS odeme_tipi TEXT
+            """)
+
+        conn.commit()
 
 veritabani_hazirla()
 
