@@ -95,6 +95,22 @@ def veritabani_hazirla():
 
 
             cur.execute("""
+                ALTER TABLE siparisler
+                ADD COLUMN IF NOT EXISTS dekont_file_id TEXT
+            """)
+
+            cur.execute("""
+                ALTER TABLE siparisler
+                ADD COLUMN IF NOT EXISTS dekont_tipi TEXT
+            """)
+
+            cur.execute("""
+                ALTER TABLE siparisler
+                ADD COLUMN IF NOT EXISTS tahsilat_iban TEXT
+            """)
+
+
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS toplu_gonderiler (
                     id BIGSERIAL PRIMARY KEY,
                     siparis_id BIGINT NOT NULL,
@@ -125,6 +141,8 @@ KARSI_ODEME_TUTAR = 15
 KARSI_ODEME_TELEFON = 16
 TAHSILAT_ID = 17
 TAHSILAT_ONAY = 18
+TAHSILAT_DEKONT = 19
+TAHSILAT_IBAN = 22
 
 IPTAL_ID = 20
 IPTAL_ONAY = 21
@@ -188,6 +206,16 @@ tek_gonderi_odeme_menu = ReplyKeyboardMarkup(
 tahsilat_onay_menu = ReplyKeyboardMarkup(
     [
         ["✅ Tahsil Edildi"],
+        ["❌ İşlemden Vazgeç"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
+
+tahsilat_iban_menu = ReplyKeyboardMarkup(
+    [
+        ["Esma", "Hasan", "Berhan"],
         ["❌ İşlemden Vazgeç"],
     ],
     resize_keyboard=True,
@@ -1029,6 +1057,77 @@ async def tahsilat_onayla(
         )
         return ConversationHandler.END
 
+    await update.message.reply_text(
+        "🧾 DEKONT GEREKLİ\n\n"
+        "Ödemenin dekontunu şimdi gönderiniz.\n\n"
+        "📷 Fotoğraf veya 📄 PDF kabul edilir.\n"
+        "Dekont yüklenmeden tahsilat tamamlanmaz.",
+        reply_markup=islem_iptal_menu
+    )
+
+    return TAHSILAT_DEKONT
+
+
+async def tahsilat_dekont_al(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    mesaj = update.message
+
+    if mesaj.photo:
+        file_id = mesaj.photo[-1].file_id
+        dekont_tipi = "FOTOĞRAF"
+
+    elif (
+        mesaj.document
+        and mesaj.document.mime_type == "application/pdf"
+    ):
+        file_id = mesaj.document.file_id
+        dekont_tipi = "PDF"
+
+    else:
+        await mesaj.reply_text(
+            "❌ Lütfen dekontu fotoğraf veya PDF olarak gönderiniz.",
+            reply_markup=islem_iptal_menu
+        )
+        return TAHSILAT_DEKONT
+
+    context.user_data["dekont_file_id"] = file_id
+    context.user_data["dekont_tipi"] = dekont_tipi
+
+    await mesaj.reply_text(
+        "🏦 Ödeme hangi IBAN'a geldi?",
+        reply_markup=tahsilat_iban_menu
+    )
+
+    return TAHSILAT_IBAN
+
+
+async def tahsilat_iban_sec(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    iban_sahibi = update.message.text.strip()
+
+    if iban_sahibi not in {"Esma", "Hasan", "Berhan"}:
+        await update.message.reply_text(
+            "Lütfen IBAN sahibini butonlardan seçiniz.",
+            reply_markup=tahsilat_iban_menu
+        )
+        return TAHSILAT_IBAN
+
+    siparis_id = context.user_data.get("tahsilat_siparis_id")
+    file_id = context.user_data.get("dekont_file_id")
+    dekont_tipi = context.user_data.get("dekont_tipi")
+
+    if not siparis_id or not file_id or not dekont_tipi:
+        context.user_data.clear()
+        await update.message.reply_text(
+            "❌ Tahsilat bilgileri eksik. İşlemi yeniden başlatın.",
+            reply_markup=ana_menu
+        )
+        return ConversationHandler.END
+
     tahsil_eden = kullanici_adi_getir(update)
     tahsilat_tarihi = datetime.now()
 
@@ -1040,7 +1139,10 @@ async def tahsilat_onayla(
                 SET
                     tahsilat_durumu = 'TAHSİL EDİLDİ',
                     tahsilat_tarihi = %s,
-                    tahsil_eden = %s
+                    tahsil_eden = %s,
+                    dekont_file_id = %s,
+                    dekont_tipi = %s,
+                    tahsilat_iban = %s
                 WHERE id = %s
                   AND odeme_tipi = 'KARŞI ÖDEMELİ'
                   AND COALESCE(tahsilat_durumu, 'BEKLİYOR') = 'BEKLİYOR'
@@ -1052,6 +1154,9 @@ async def tahsilat_onayla(
                 (
                     tahsilat_tarihi,
                     tahsil_eden,
+                    file_id,
+                    dekont_tipi,
+                    iban_sahibi,
                     siparis_id
                 )
             )
@@ -1059,11 +1164,10 @@ async def tahsilat_onayla(
 
         conn.commit()
 
-    context.user_data.clear()
-
     if not sonuc:
+        context.user_data.clear()
         await update.message.reply_text(
-            "⚠️ Bu tahsilat daha önce işaretlenmiş olabilir. "
+            "⚠️ Bu tahsilat daha önce tamamlanmış olabilir. "
             "Bekleyen listeyi tekrar kontrol edin.",
             reply_markup=ana_menu
         )
@@ -1077,12 +1181,15 @@ async def tahsilat_onayla(
         f"📦 {siparis_metni}\n"
         f"💰 {abs(float(tutar or 0)):,.2f} ₺\n"
         f"📞 {telefon or '-'}\n"
-        f"👤 Tahsil eden: {tahsil_eden}\n"
+        f"🏦 IBAN: {iban_sahibi}\n"
+        f"🧾 Dekont: {dekont_tipi} kaydedildi\n"
+        f"👤 İşlemi yapan: {tahsil_eden}\n"
         f"🕐 {tahsilat_tarihi.strftime('%d.%m.%Y %H:%M')}\n\n"
         "Kayıt bekleyen karşı ödemeliler listesinden çıkarıldı.",
         reply_markup=ana_menu
     )
 
+    context.user_data.clear()
     return ConversationHandler.END
 
 
@@ -1498,6 +1605,21 @@ def main():
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     tahsilat_onayla
+                )
+            ],
+
+
+            TAHSILAT_DEKONT: [
+                MessageHandler(
+                    (filters.PHOTO | filters.Document.PDF),
+                    tahsilat_dekont_al
+                )
+            ],
+
+            TAHSILAT_IBAN: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    tahsilat_iban_sec
                 )
             ],
         },
