@@ -228,7 +228,7 @@ async def nasil_kullanilir(
         "📥 İŞ ALMA\n"
         "1️⃣ 📥 İş Al butonuna basın.\n"
         "2️⃣ Aldığınız işin ID numarasını yazın.\n"
-        "Örnek: 25\n"
+        
         "3️⃣ ✅ Bu İşi Aldım butonuna basın.\n"
         "4️⃣ Kargo ücretini yazın.\n\n"
 
@@ -273,8 +273,7 @@ async def siparis_baslat(
 
     await update.message.reply_text(
         "📦 Sipariş bilgisini yazınız.\n\n"
-        "Örnek:\n"
-        "VARMAKSAN ERZURUM\n\n"
+        
         "Yeni müşteriyse adres ve telefon gibi "
         "bilgileri aynı mesajın içine ekleyebilirsiniz."
     )
@@ -390,7 +389,7 @@ async def is_al_baslat(
     await update.message.reply_text(
         "📥 ALINACAK İŞ\n\n"
         "Aldığınız siparişin 🆔 numarasını yazınız.\n\n"
-        "Örnek: 12"
+        
     )
 
     return IS_ID
@@ -406,7 +405,7 @@ async def is_id_al(
     except ValueError:
         await update.message.reply_text(
             "❌ Geçerli bir sipariş numarası yazınız.\n"
-            "Örnek: 12"
+            
         )
         return IS_ID
 
@@ -483,8 +482,7 @@ async def kargo_ucreti_al(
     except ValueError:
         await update.message.reply_text(
             "❌ Kargo ücretini anlayamadım.\n\n"
-            "Nakit örnek: 900\n"
-            "Vadeli örnek: -900"
+            
         )
         return KARGO_UCRETI
 
@@ -571,7 +569,7 @@ async def siparis_iptal_baslat(
         "🗑 SİPARİŞ İPTAL\n\n"
         "İptal edilecek açık siparişin 🆔 "
         "numarasını yazınız.\n\n"
-        "Örnek: 12"
+        
     )
 
     return IPTAL_ID
@@ -587,7 +585,7 @@ async def siparis_iptal_id_al(
     except ValueError:
         await update.message.reply_text(
             "❌ Geçerli bir sipariş numarası yazınız.\n"
-            "Örnek: 12"
+            
         )
         return IPTAL_ID
 
