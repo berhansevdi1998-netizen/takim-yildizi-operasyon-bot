@@ -218,6 +218,7 @@ tahsilat_onay_menu = ReplyKeyboardMarkup(
 tahsilat_iban_menu = ReplyKeyboardMarkup(
     [
         ["Esma", "Hasan", "Berhan"],
+        ["Cevdet Dayı"],
         ["❌ İşlemden Vazgeç"],
     ],
     resize_keyboard=True,
@@ -1111,7 +1112,7 @@ async def tahsilat_iban_sec(
 ):
     iban_sahibi = update.message.text.strip()
 
-    if iban_sahibi not in {"Esma", "Hasan", "Berhan"}:
+    if iban_sahibi not in {"Esma", "Hasan", "Berhan", "Cevdet Dayı"}:
         await update.message.reply_text(
             "Lütfen IBAN sahibini butonlardan seçiniz.",
             reply_markup=tahsilat_iban_menu
