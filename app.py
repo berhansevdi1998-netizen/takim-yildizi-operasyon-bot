@@ -109,6 +109,11 @@ def veritabani_hazirla():
                 ADD COLUMN IF NOT EXISTS tahsilat_iban TEXT
             """)
 
+            cur.execute("""
+                ALTER TABLE siparisler
+                ADD COLUMN IF NOT EXISTS acil BOOLEAN NOT NULL DEFAULT FALSE
+            """)
+
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS toplu_gonderiler (
@@ -147,6 +152,8 @@ TAHSILAT_GECMIS_ID = 23
 
 IPTAL_ID = 20
 IPTAL_ONAY = 21
+ACIL_ID = 24
+ACIL_ISLEM = 25
 
 
 # =========================================================
@@ -158,6 +165,7 @@ ana_menu = ReplyKeyboardMarkup(
         ["➕ Sipariş Ekle"],
         ["📦 Açık İşler", "📥 İş Al"],
         ["🚚 Alınan İşler", "🗑 Sipariş İptal"],
+        ["🚨 Acil İş"],
         ["📲 Karşı Ödemeliler"],
         ["📜 Tahsil Edilen Karşı Ödemeler"],
         ["🏦 IBAN Bilgileri"],
@@ -172,6 +180,16 @@ iptal_onay_menu = ReplyKeyboardMarkup(
     [
         ["✅ İptal Et"],
         ["❌ Vazgeç"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
+
+acil_islem_menu = ReplyKeyboardMarkup(
+    [
+        ["🚨 Acil Yap", "✅ Acili Kaldır"],
+        ["❌ İşlemden Vazgeç"],
     ],
     resize_keyboard=True,
     one_time_keyboard=True
@@ -442,10 +460,11 @@ async def acik_isler(
             cur.execute("""
                 SELECT
                     id,
-                    siparis_metni
+                    siparis_metni,
+                    COALESCE(acil, FALSE)
                 FROM siparisler
                 WHERE durum = 'ACIK'
-                ORDER BY id ASC
+                ORDER BY COALESCE(acil, FALSE) DESC, id ASC
             """)
 
             kayitlar = cur.fetchall()
@@ -461,17 +480,155 @@ async def acik_isler(
         f"📦 AÇIK İŞLER — {len(kayitlar)} ADET\n\n"
     )
 
-    for siparis_id, siparis_metni in kayitlar:
-        mesaj += (
+    for siparis_id, siparis_metni, acil in kayitlar:
+        if acil:
+            mesaj += (
+                "🚨🚨 ACİL — ÖNCELİKLİ ALIN 🚨🚨\n"
+                f"🆔 #{siparis_id}\n"
+                f"📦 {siparis_metni}\n"
+                "────────────\n"
+            )
+        else:
+            mesaj += (
+                f"🆔 #{siparis_id}\n"
+                f"📦 {siparis_metni}\n"
+                "────────────\n"
+            )
+
+    await update.message.reply_text(
+        mesaj,
+        reply_markup=ana_menu
+    )
+
+
+
+# =========================================================
+# ACIL IS
+# =========================================================
+
+async def acil_is_baslat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "🚨 ACİL İŞ\n\n"
+        "Acil durumunu değiştirmek istediğiniz açık siparişin ID numarasını yazınız.",
+        reply_markup=islem_iptal_menu
+    )
+
+    return ACIL_ID
+
+
+async def acil_id_al(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        siparis_id = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Geçerli bir sipariş ID numarası yazınız.",
+            reply_markup=islem_iptal_menu
+        )
+        return ACIL_ID
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    siparis_metni,
+                    COALESCE(acil, FALSE)
+                FROM siparisler
+                WHERE id = %s
+                  AND durum = 'ACIK'
+            """, (siparis_id,))
+            kayit = cur.fetchone()
+
+    if not kayit:
+        await update.message.reply_text(
+            "❌ Bu ID ile açık bir sipariş bulunamadı.",
+            reply_markup=islem_iptal_menu
+        )
+        return ACIL_ID
+
+    siparis_metni, acil = kayit
+    context.user_data["acil_siparis_id"] = siparis_id
+
+    durum_metni = "🚨 Şu anda ACİL" if acil else "📦 Şu anda NORMAL"
+
+    await update.message.reply_text(
+        f"🆔 #{siparis_id}\n"
+        f"📦 {siparis_metni}\n\n"
+        f"{durum_metni}\n\n"
+        "Yapmak istediğiniz işlemi seçiniz:",
+        reply_markup=acil_islem_menu
+    )
+
+    return ACIL_ISLEM
+
+
+async def acil_islem_yap(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    secim = update.message.text
+    siparis_id = context.user_data.get("acil_siparis_id")
+
+    if secim not in {"🚨 Acil Yap", "✅ Acili Kaldır"}:
+        await update.message.reply_text(
+            "Lütfen aşağıdaki butonlardan birini seçiniz.",
+            reply_markup=acil_islem_menu
+        )
+        return ACIL_ISLEM
+
+    yeni_acil = secim == "🚨 Acil Yap"
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE siparisler
+                SET acil = %s
+                WHERE id = %s
+                  AND durum = 'ACIK'
+                RETURNING siparis_metni
+            """, (yeni_acil, siparis_id))
+            kayit = cur.fetchone()
+        conn.commit()
+
+    if not kayit:
+        await update.message.reply_text(
+            "❌ Sipariş artık açık değil veya bulunamadı.",
+            reply_markup=ana_menu
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    siparis_metni = kayit[0]
+
+    if yeni_acil:
+        mesaj = (
+            "🚨 SİPARİŞ ACİL YAPILDI\n\n"
             f"🆔 #{siparis_id}\n"
-            f"📦 {siparis_metni}\n"
-            "────────────\n"
+            f"📦 {siparis_metni}\n\n"
+            "Bu sipariş Açık İşler listesinin en üstünde görünecek."
+        )
+    else:
+        mesaj = (
+            "✅ ACİL DURUMU KALDIRILDI\n\n"
+            f"🆔 #{siparis_id}\n"
+            f"📦 {siparis_metni}"
         )
 
     await update.message.reply_text(
         mesaj,
         reply_markup=ana_menu
     )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
 
 
 # =========================================================
@@ -1917,6 +2074,36 @@ def main():
         ],
     )
 
+    acil_conversation = ConversationHandler(
+        entry_points=[
+            MessageHandler(
+                filters.Regex("^🚨 Acil İş$"),
+                acil_is_baslat
+            )
+        ],
+        states={
+            ACIL_ID: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    acil_id_al
+                )
+            ],
+            ACIL_ISLEM: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    acil_islem_yap
+                )
+            ],
+        },
+        fallbacks=[
+            MessageHandler(
+                filters.Regex("^❌ İşlemden Vazgeç$"),
+                iptal
+            ),
+            CommandHandler("iptal", iptal)
+        ],
+    )
+
     application.add_handler(
         CommandHandler("start", start)
     )
@@ -1939,6 +2126,10 @@ def main():
 
     application.add_handler(
         siparis_iptal_conversation
+    )
+
+    application.add_handler(
+        acil_conversation
     )
 
     application.add_handler(
