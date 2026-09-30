@@ -73,6 +73,26 @@ def veritabani_hazirla():
                 ADD COLUMN IF NOT EXISTS iptal_eden TEXT
             """)
 
+            cur.execute("""
+                ALTER TABLE siparisler
+                ADD COLUMN IF NOT EXISTS karsi_odeme_telefon TEXT
+            """)
+
+            cur.execute("""
+                ALTER TABLE siparisler
+                ADD COLUMN IF NOT EXISTS tahsilat_durumu TEXT
+            """)
+
+            cur.execute("""
+                ALTER TABLE siparisler
+                ADD COLUMN IF NOT EXISTS tahsilat_tarihi TIMESTAMP
+            """)
+
+            cur.execute("""
+                ALTER TABLE siparisler
+                ADD COLUMN IF NOT EXISTS tahsil_eden TEXT
+            """)
+
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS toplu_gonderiler (
@@ -101,6 +121,8 @@ IS_ID = 10
 KARGO_UCRETI = 12
 GONDERI_TIPI = 13
 TOPLU_GONDERILER = 14
+KARSI_ODEME_TUTAR = 15
+KARSI_ODEME_TELEFON = 16
 
 IPTAL_ID = 20
 IPTAL_ONAY = 21
@@ -148,6 +170,15 @@ gonderi_tipi_menu = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
     one_time_keyboard=True
+)
+
+
+tek_gonderi_odeme_menu = ReplyKeyboardMarkup(
+    [
+        ["📲 Karşı Ödemeli"],
+        ["❌ İşlemden Vazgeç"],
+    ],
+    resize_keyboard=True
 )
 
 
@@ -252,7 +283,7 @@ async def nasil_kullanilir(
         "1️⃣ 📥 İş Al butonuna basın.\n"
         "2️⃣ Aldığınız işin ID numarasını yazın.\n"
         "3️⃣ Tek Gönderi veya Toplu Gönderi seçin.\n"
-        "4️⃣ Tek gönderide kargo ücretini yazın.\n"
+        "4️⃣ Tek gönderide nakit/vadeli tutarı yazın veya 📲 Karşı Ödemeli seçin.\n"
         "5️⃣ Toplu gönderide şehir ve ücretleri alt alta yazın.\n\n"
 
         "💰 KARGO ÜCRETİ\n"
@@ -469,8 +500,9 @@ async def gonderi_tipi_sec(
         await update.message.reply_text(
             "💰 Kargo ücretini yazınız.\n\n"
             "💵 Nakit ise tutarı normal yazın.\n"
-            "📒 Vadeli / cari ise tutarı eksi olarak yazın.",
-            reply_markup=islem_iptal_menu
+            "📒 Vadeli / cari ise tutarı eksi olarak yazın.\n\n"
+            "📲 Karşı ödemeli ise aşağıdaki butona basın.",
+            reply_markup=tek_gonderi_odeme_menu
         )
         return KARGO_UCRETI
 
@@ -496,6 +528,14 @@ async def kargo_ucreti_al(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+    if update.message.text.strip() == "📲 Karşı Ödemeli":
+        await update.message.reply_text(
+            "📲 KARŞI ÖDEMELİ\n\n"
+            "💰 Kargo ücretini yazınız.",
+            reply_markup=islem_iptal_menu
+        )
+        return KARSI_ODEME_TUTAR
+
     try:
         kargo_ucreti = tutar_cevir(
             update.message.text
@@ -574,6 +614,110 @@ async def kargo_ucreti_al(
 
     context.user_data.clear()
 
+    return ConversationHandler.END
+
+
+async def karsi_odeme_tutar_al(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        tutar = abs(tutar_cevir(update.message.text))
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Kargo ücretini anlayamadım.\n\n"
+            "Lütfen sadece tutarı yazınız.",
+            reply_markup=islem_iptal_menu
+        )
+        return KARSI_ODEME_TUTAR
+
+    context.user_data["karsi_odeme_tutar"] = tutar
+
+    await update.message.reply_text(
+        "📞 Karşı taraftan ödeme alınacak telefon numarasını yazınız.",
+        reply_markup=islem_iptal_menu
+    )
+
+    return KARSI_ODEME_TELEFON
+
+
+async def karsi_odeme_telefon_al(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    telefon = update.message.text.strip()
+
+    rakamlar = "".join(ch for ch in telefon if ch.isdigit())
+
+    if len(rakamlar) < 10 or len(rakamlar) > 13:
+        await update.message.reply_text(
+            "❌ Telefon numarasını anlayamadım.\n\n"
+            "Lütfen telefon numarasını tekrar yazınız.",
+            reply_markup=islem_iptal_menu
+        )
+        return KARSI_ODEME_TELEFON
+
+    siparis_id = context.user_data["siparis_id"]
+    tutar = context.user_data["karsi_odeme_tutar"]
+    personel = kullanici_adi_getir(update)
+    alinma_tarihi = datetime.now()
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE siparisler
+                SET
+                    durum = 'ALINDI',
+                    alan_personel = %s,
+                    alinma_tarihi = %s,
+                    kargo_ucreti = %s,
+                    odeme_tipi = 'KARŞI ÖDEMELİ',
+                    karsi_odeme_telefon = %s,
+                    tahsilat_durumu = 'BEKLİYOR'
+                WHERE id = %s
+                  AND durum = 'ACIK'
+                RETURNING siparis_metni
+                """,
+                (
+                    personel,
+                    alinma_tarihi,
+                    tutar,
+                    telefon,
+                    siparis_id
+                )
+            )
+            sonuc = cur.fetchone()
+
+        conn.commit()
+
+    if not sonuc:
+        context.user_data.clear()
+        await update.message.reply_text(
+            "⚠️ Bu iş siz işlem yaparken başka bir personel "
+            "tarafından alınmış veya iptal edilmiş.\n\n"
+            "📦 Açık İşler listesini tekrar kontrol edin.",
+            reply_markup=ana_menu
+        )
+        return ConversationHandler.END
+
+    siparis_metni = sonuc[0]
+
+    await update.message.reply_text(
+        "✅ İŞ ALINDI\n\n"
+        f"🆔 #{siparis_id}\n"
+        f"📦 {siparis_metni}\n"
+        f"👤 Alan: {personel}\n"
+        "💳 Ödeme Tipi: KARŞI ÖDEMELİ\n"
+        f"💰 Kargo Ücreti: {tutar:,.2f} ₺\n"
+        f"📞 Telefon: {telefon}\n"
+        "⏳ Tahsilat Durumu: BEKLİYOR\n"
+        f"🕐 Saat: {alinma_tarihi.strftime('%H:%M')}\n\n"
+        "Bu iş artık Açık İşler listesinden çıkarıldı.",
+        reply_markup=ana_menu
+    )
+
+    context.user_data.clear()
     return ConversationHandler.END
 
 
@@ -888,7 +1032,9 @@ async def alinan_isler(
                     alan_personel,
                     kargo_ucreti,
                     odeme_tipi,
-                    alinma_tarihi
+                    alinma_tarihi,
+                    karsi_odeme_telefon,
+                    tahsilat_durumu
                 FROM siparisler
                 WHERE durum = 'ALINDI'
                 ORDER BY alinma_tarihi DESC
@@ -911,6 +1057,7 @@ async def alinan_isler(
     toplam = 0
     nakit_toplam = 0
     vadeli_toplam = 0
+    karsi_odeme_toplam = 0
 
     for (
         siparis_id,
@@ -918,7 +1065,9 @@ async def alinan_isler(
         personel,
         kargo_ucreti,
         odeme_tipi,
-        alinma_tarihi
+        alinma_tarihi,
+        karsi_odeme_telefon,
+        tahsilat_durumu
     ) in kayitlar:
 
         ucret = abs(float(kargo_ucreti or 0))
@@ -930,6 +1079,8 @@ async def alinan_isler(
                 nakit_toplam += ucret
             elif odeme_tipi == "VADELİ":
                 vadeli_toplam += ucret
+            elif odeme_tipi == "KARŞI ÖDEMELİ":
+                karsi_odeme_toplam += ucret
 
         mesaj += (
             f"🆔 #{siparis_id}\n"
@@ -973,6 +1124,12 @@ async def alinan_isler(
                 f"💰 {ucret:,.2f} ₺\n"
             )
 
+            if odeme_tipi == "KARŞI ÖDEMELİ":
+                mesaj += (
+                    f"📞 {karsi_odeme_telefon or '-'}\n"
+                    f"⏳ Tahsilat: {tahsilat_durumu or 'BEKLİYOR'}\n"
+                )
+
         if alinma_tarihi:
             mesaj += (
                 f"🕐 {alinma_tarihi.strftime('%H:%M')}\n"
@@ -984,6 +1141,7 @@ async def alinan_isler(
         "\n💰 GÜN SONU TOPLAMLARI\n\n"
         f"💵 NAKİT: {nakit_toplam:,.2f} ₺\n"
         f"📒 VADELİ: {vadeli_toplam:,.2f} ₺\n"
+        f"📲 KARŞI ÖDEMELİ: {karsi_odeme_toplam:,.2f} ₺\n"
         f"💰 TOPLAM: {toplam:,.2f} ₺"
     )
 
@@ -1076,6 +1234,20 @@ def main():
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     kargo_ucreti_al
+                )
+            ],
+
+            KARSI_ODEME_TUTAR: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    karsi_odeme_tutar_al
+                )
+            ],
+
+            KARSI_ODEME_TELEFON: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    karsi_odeme_telefon_al
                 )
             ],
 
