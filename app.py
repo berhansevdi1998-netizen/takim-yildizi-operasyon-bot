@@ -118,6 +118,15 @@ iptal_onay_menu = ReplyKeyboardMarkup(
 )
 
 
+islem_iptal_menu = ReplyKeyboardMarkup(
+    [
+        ["❌ İşlemden Vazgeç"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
+
 # =========================================================
 # YARDIMCI FONKSIYONLAR
 # =========================================================
@@ -261,7 +270,8 @@ async def siparis_baslat(
         "📦 Sipariş bilgisini yazınız.\n\n"
         
         "Yeni müşteriyse adres ve telefon gibi "
-        "bilgileri aynı mesajın içine ekleyebilirsiniz."
+        "bilgileri aynı mesajın içine ekleyebilirsiniz.",
+        reply_markup=islem_iptal_menu
     )
 
     return SIPARIS_METNI
@@ -419,7 +429,8 @@ async def is_id_al(
         f"📦 {siparis_metni}\n\n"
         "💰 Kargo ücretini yazınız.\n\n"
         "💵 Nakit ise tutarı normal yazın.\n"
-        "📒 Vadeli / cari ise tutarı eksi olarak yazın."
+        "📒 Vadeli / cari ise tutarı eksi olarak yazın.",
+        reply_markup=islem_iptal_menu
     )
 
     return KARGO_UCRETI
@@ -746,7 +757,7 @@ async def iptal(
     context.user_data.clear()
 
     await update.message.reply_text(
-        "❌ İşlem iptal edildi.",
+        "❌ İşlem iptal edildi. Ana menüye dönüldü.",
         reply_markup=ana_menu
     )
 
@@ -775,13 +786,17 @@ def main():
         states={
             SIPARIS_METNI: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     siparis_kaydet
                 )
             ],
         },
 
         fallbacks=[
+            MessageHandler(
+                filters.Regex("^❌ İşlemden Vazgeç$"),
+                iptal
+            ),
             CommandHandler("iptal", iptal)
         ],
     )
@@ -797,7 +812,7 @@ def main():
         states={
             IS_ID: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     is_id_al
                 )
             ],
@@ -805,13 +820,17 @@ def main():
 
             KARGO_UCRETI: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     kargo_ucreti_al
                 )
             ],
         },
 
         fallbacks=[
+            MessageHandler(
+                filters.Regex("^❌ İşlemden Vazgeç$"),
+                iptal
+            ),
             CommandHandler("iptal", iptal)
         ],
     )
@@ -827,20 +846,24 @@ def main():
         states={
             IPTAL_ID: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     siparis_iptal_id_al
                 )
             ],
 
             IPTAL_ONAY: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     siparis_iptal_onayla
                 )
             ],
         },
 
         fallbacks=[
+            MessageHandler(
+                filters.Regex("^❌ İşlemden Vazgeç$"),
+                iptal
+            ),
             CommandHandler("iptal", iptal)
         ],
     )
