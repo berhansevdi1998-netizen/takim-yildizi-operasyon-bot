@@ -60,7 +60,10 @@ def veritabani_hazirla():
                     kargo_ucreti NUMERIC(15,2)
                 )
             """)
-
+cur.execute("""
+    ALTER TABLE siparisler
+    ADD COLUMN IF NOT EXISTS odeme_tipi TEXT
+""")
         conn.commit()
 
 
@@ -129,7 +132,7 @@ def tutar_cevir(text):
 
     tutar = float(text)
 
-    if tutar < 0:
+    if tutar == 0:
         raise ValueError
 
     return tutar
@@ -400,7 +403,10 @@ async def kargo_ucreti_al(
         )
 
         return KARGO_UCRETI
-
+if kargo_ucreti > 0:
+    odeme_tipi = "NAKİT"
+else:
+    odeme_tipi = "VADELİ"
     siparis_id = context.user_data["siparis_id"]
 
     kullanici = update.effective_user
@@ -420,22 +426,23 @@ async def kargo_ucreti_al(
                 """
                 UPDATE siparisler
                 SET
-                    durum = 'ALINDI',
-                    alan_personel = %s,
-                    alinma_tarihi = %s,
-                    kargo_ucreti = %s
+    durum = 'ALINDI',
+    alan_personel = %s,
+    alinma_tarihi = %s,
+    kargo_ucreti = %s,
+    odeme_tipi = %s
                 WHERE id = %s
                 AND durum = 'ACIK'
                 RETURNING siparis_metni
                 """,
-                (
-                    personel,
-                    alinma_tarihi,
-                    kargo_ucreti,
-                    siparis_id
-                )
-            )
-
+        (
+    personel,
+    alinma_tarihi,
+    kargo_ucreti,
+    odeme_tipi,
+    siparis_id
+)
+)
             sonuc = cur.fetchone()
 
         conn.commit()
@@ -459,7 +466,8 @@ async def kargo_ucreti_al(
         f"🆔 #{siparis_id}\n"
         f"📦 {siparis_metni}\n"
         f"👤 Alan: {personel}\n"
-        f"💰 Kargo Ücreti: {kargo_ucreti:,.2f} ₺\n"
+        f"💳 Ödeme Tipi: {odeme_tipi}\n"
+f"💰 Kargo Ücreti: {abs(kargo_ucreti):,.2f} ₺\n"
         f"🕐 Saat: {alinma_tarihi.strftime('%H:%M')}\n\n"
         "Bu iş artık Açık İşler listesinden çıkarıldı.",
         reply_markup=ana_menu
@@ -486,6 +494,7 @@ async def alinan_isler(
                     siparis_metni,
                     alan_personel,
                     kargo_ucreti,
+                    odeme_tipi,
                     alinma_tarihi
                 FROM siparisler
                 WHERE durum = 'ALINDI'
@@ -508,23 +517,28 @@ async def alinan_isler(
     )
 
     toplam = 0
-
+nakit_toplam = 0
+vadeli_toplam = 0
     for (
-        siparis_id,
-        siparis_metni,
-        personel,
-        kargo_ucreti,
-        alinma_tarihi
-    ) in kayitlar:
-
-        ucret = float(kargo_ucreti or 0)
-        toplam += ucret
-
+    siparis_id,
+    siparis_metni,
+    personel,
+    kargo_ucreti,
+    odeme_tipi,
+    alinma_tarihi
+) in kayitlar:
+        ucret = abs(float(kargo_ucreti or 0))
+toplam += ucret
+if odeme_tipi == "NAKİT":
+    nakit_toplam += ucret
+elif odeme_tipi == "VADELİ":
+    vadeli_toplam += ucret
         mesaj += (
             f"🆔 #{siparis_id}\n"
             f"📦 {siparis_metni}\n"
             f"👤 {personel or '-'}\n"
-            f"💰 {ucret:,.2f} ₺\n"
+            f"💳 {odeme_tipi or '-'}\n"
+f"💰 {ucret:,.2f} ₺\n"
         )
 
         if alinma_tarihi:
@@ -534,10 +548,12 @@ async def alinan_isler(
 
         mesaj += "────────────\n"
 
-    mesaj += (
-        "\n💰 TOPLAM KARGO ÜCRETİ\n"
-        f"{toplam:,.2f} ₺"
-    )
+   mesaj += (
+    "\n💰 GÜN SONU TOPLAMLARI\n\n"
+    f"💵 NAKİT: {nakit_toplam:,.2f} ₺\n"
+    f"📒 VADELİ: {vadeli_toplam:,.2f} ₺\n"
+    f"💰 TOPLAM: {toplam:,.2f} ₺"
+)
 
     await update.message.reply_text(
         mesaj,
