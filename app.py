@@ -510,14 +510,13 @@ async def alinan_isler(
             "🚚 Henüz alınan iş bulunmuyor.",
             reply_markup=ana_menu
         )
-
         return
 
     mesaj = (
         f"🚚 ALINAN İŞLER — {len(kayitlar)} ADET\n\n"
     )
 
-       toplam = 0
+    toplam = 0
     nakit_toplam = 0
     vadeli_toplam = 0
 
@@ -529,6 +528,7 @@ async def alinan_isler(
         odeme_tipi,
         alinma_tarihi
     ) in kayitlar:
+
         ucret = abs(float(kargo_ucreti or 0))
         toplam += ucret
 
@@ -536,6 +536,7 @@ async def alinan_isler(
             nakit_toplam += ucret
         elif odeme_tipi == "VADELİ":
             vadeli_toplam += ucret
+
         mesaj += (
             f"🆔 #{siparis_id}\n"
             f"📦 {siparis_metni}\n"
@@ -544,19 +545,19 @@ async def alinan_isler(
             f"💰 {ucret:,.2f} ₺\n"
         )
 
-            if alinma_tarihi:
+        if alinma_tarihi:
             mesaj += (
                 f"🕐 {alinma_tarihi.strftime('%H:%M')}\n"
             )
 
-            mesaj += "────────────\n"
+        mesaj += "────────────\n"
 
-   mesaj += (
-    "\n💰 GÜN SONU TOPLAMLARI\n\n"
-    f"💵 NAKİT: {nakit_toplam:,.2f} ₺\n"
-    f"📒 VADELİ: {vadeli_toplam:,.2f} ₺\n"
-    f"💰 TOPLAM: {toplam:,.2f} ₺"
-)
+    mesaj += (
+        "\n💰 GÜN SONU TOPLAMLARI\n\n"
+        f"💵 NAKİT: {nakit_toplam:,.2f} ₺\n"
+        f"📒 VADELİ: {vadeli_toplam:,.2f} ₺\n"
+        f"💰 TOPLAM: {toplam:,.2f} ₺"
+    )
 
     await update.message.reply_text(
         mesaj,
