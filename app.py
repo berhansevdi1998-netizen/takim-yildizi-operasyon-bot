@@ -160,6 +160,7 @@ ana_menu = ReplyKeyboardMarkup(
         ["🚚 Alınan İşler", "🗑 Sipariş İptal"],
         ["📲 Karşı Ödemeliler"],
         ["📜 Tahsil Edilen Karşı Ödemeler"],
+        ["🏦 IBAN Bilgileri"],
         ["❓ Nasıl Kullanılır?"],
     ],
     resize_keyboard=True
@@ -1666,6 +1667,54 @@ async def iptal(
 # MAIN
 # =========================================================
 
+
+iban_bilgileri_menu = ReplyKeyboardMarkup(
+    [
+        ["Berhan", "Esma"],
+        ["Hasan - Akbank"],
+        ["Hasan - QNB"],
+        ["Hasan - DenizBank"],
+        ["🏠 Ana Menü"],
+    ],
+    resize_keyboard=True
+)
+
+IBAN_BILGILERI = {
+    "Berhan": ("Berhan Sevdi", "TR74 0015 7000 0000 0087 5837 72"),
+    "Esma": ("Esman Nur Bakar", "TR08 0015 7000 0000 0147 0863 12"),
+    "Hasan - Akbank": ("Hasan Hüseyin Yıldız", "TR43 0004 6005 4488 8000 1617 04"),
+    "Hasan - QNB": ("Hasan Hüseyin Yıldız", "TR52 0011 1000 0000 0097 9604 54"),
+    "Hasan - DenizBank": ("Hasan Hüseyin Yıldız", "TR65 0013 4000 0143 7521 8000 03"),
+}
+
+
+async def iban_bilgileri(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🏦 IBAN BİLGİLERİ\n\nGöndermek istediğiniz hesabı seçiniz:",
+        reply_markup=iban_bilgileri_menu
+    )
+
+
+async def iban_goster(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    secim = update.message.text
+
+    if secim == "🏠 Ana Menü":
+        await update.message.reply_text(
+            "Ana menüye dönüldü.",
+            reply_markup=ana_menu
+        )
+        return
+
+    bilgi = IBAN_BILGILERI.get(secim)
+    if not bilgi:
+        return
+
+    hesap_sahibi, iban = bilgi
+    await update.message.reply_text(
+        f"{hesap_sahibi}\n{iban}",
+        reply_markup=iban_bilgileri_menu
+    )
+
 def main():
     application = (
         Application.builder()
@@ -1916,6 +1965,12 @@ def main():
     print(
         "Takim Yildizi Operasyon Bot webhook ile baslatiliyor..."
     )
+
+    application.add_handler(MessageHandler(filters.Regex("^🏦 IBAN Bilgileri$"), iban_bilgileri))
+    application.add_handler(MessageHandler(
+        filters.Regex("^(Berhan|Esma|Hasan - Akbank|Hasan - QNB|Hasan - DenizBank|🏠 Ana Menü)$"),
+        iban_goster
+    ))
 
     application.run_webhook(
         listen="0.0.0.0",
