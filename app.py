@@ -64,7 +64,7 @@ cur.execute("""
     ALTER TABLE siparisler
     ADD COLUMN IF NOT EXISTS odeme_tipi TEXT
 """)
-        conn.commit()
+    conn.commit()
 
 
 veritabani_hazirla()
