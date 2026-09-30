@@ -459,10 +459,10 @@ async def is_onayla(
         )
         return IS_ONAY
 
-    await update.message.reply_text(
-        "💰 Kargo ücretini yazınız.\n\n"
-        "💵 Nakit ise pozitif yazın: 900\n"
-        "📒 Vadeli ise eksi yazın: -900"
+   await update.message.reply_text(
+    "💰 Kargo ücretini yazınız.\n\n"
+    "💵 Nakit ise tutarı normal yazın.\n"
+    "📒 Vadeli / cari ise tutarı eksi olarak yazın."
     )
 
     return KARGO_UCRETI
