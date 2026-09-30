@@ -129,7 +129,44 @@ def veritabani_hazirla():
         conn.commit()
 
 
+
+def tek_seferlik_operasyon_test_verilerini_temizle():
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Tek seferlik güvenlik işareti.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS sistem_bakim (
+                    anahtar TEXT PRIMARY KEY,
+                    deger TEXT NOT NULL
+                )
+            """)
+
+            cur.execute("""
+                SELECT deger
+                FROM sistem_bakim
+                WHERE anahtar = 'operasyon_ilk_canli_temizlik_2026_10_01'
+            """)
+            if cur.fetchone():
+                return
+
+            # SADECE operasyon tabloları temizlenir.
+            # Ödeme botunun "odemeler" tablosuna dokunulmaz.
+            cur.execute("TRUNCATE TABLE toplu_gonderiler RESTART IDENTITY")
+            cur.execute("TRUNCATE TABLE siparisler RESTART IDENTITY")
+
+            cur.execute("""
+                INSERT INTO sistem_bakim (anahtar, deger)
+                VALUES (
+                    'operasyon_ilk_canli_temizlik_2026_10_01',
+                    'TAMAMLANDI'
+                )
+            """)
+
+        conn.commit()
+
+
 veritabani_hazirla()
+tek_seferlik_operasyon_test_verilerini_temizle()
 
 
 # =========================================================
