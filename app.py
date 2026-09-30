@@ -1,9 +1,7 @@
 import os
-import threading
 from datetime import datetime
 
 import psycopg
-from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -16,31 +14,28 @@ from telegram.ext import (
 
 
 # =========================================================
-# RENDER WEB SERVER
+# AYARLAR
 # =========================================================
 
-web_app = Flask(__name__)
+DATABASE_URL = os.environ.get("DATABASE_URL")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
+WEBHOOK_URL = (
+    "https://takim-yildizi-operasyon-bot.onrender.com"
+)
 
-@web_app.route("/")
-def home():
-    return "Takim Yildizi Operasyon Bot aktif."
+PORT = int(os.environ.get("PORT", "10000"))
 
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL bulunamadi.")
 
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port)
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN bulunamadi.")
 
 
 # =========================================================
 # POSTGRESQL
 # =========================================================
-
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL bulunamadi.")
-
 
 def get_db():
     return psycopg.connect(DATABASE_URL)
@@ -49,6 +44,7 @@ def get_db():
 def veritabani_hazirla():
     with get_db() as conn:
         with conn.cursor() as cur:
+
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS siparisler (
                     id BIGSERIAL PRIMARY KEY,
@@ -106,6 +102,7 @@ ana_menu = ReplyKeyboardMarkup(
         ["➕ Sipariş Ekle"],
         ["📦 Açık İşler", "📥 İş Al"],
         ["🚚 Alınan İşler", "🗑 Sipariş İptal"],
+        ["❓ Nasıl Kullanılır?"],
     ],
     resize_keyboard=True
 )
@@ -209,6 +206,57 @@ async def start(
         "🚚 TAKIM YILDIZI OPERASYON\n\n"
         "Gündüz kargo operasyon sistemi\n\n"
         "Yapmak istediğiniz işlemi seçiniz:",
+        reply_markup=ana_menu
+    )
+
+
+# =========================================================
+# NASIL KULLANILIR
+# =========================================================
+
+async def nasil_kullanilir(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    mesaj = (
+        "❓ TAKIM YILDIZI OPERASYON — KULLANIM\n\n"
+
+        "📦 AÇIK İŞLER\n"
+        "Henüz alınmamış işleri görmek için "
+        "📦 Açık İşler butonuna basın.\n\n"
+
+        "📥 İŞ ALMA\n"
+        "1️⃣ 📥 İş Al butonuna basın.\n"
+        "2️⃣ Aldığınız işin ID numarasını yazın.\n"
+        "Örnek: 25\n"
+        "3️⃣ ✅ Bu İşi Aldım butonuna basın.\n"
+        "4️⃣ Kargo ücretini yazın.\n\n"
+
+        "💰 KARGO ÜCRETİ\n"
+        "💵 Nakit aldıysanız normal yazın:\n"
+        "900\n\n"
+        "📒 Vadeli / cari ise eksi yazın:\n"
+        "-900\n\n"
+
+        "✅ İş alındığında otomatik olarak "
+        "Açık İşler listesinden çıkar.\n\n"
+
+        "🚚 ALINAN İŞLER\n"
+        "Alınan işleri, alan personeli, ödeme tipini "
+        "ve kargo ücretini buradan görebilirsiniz.\n\n"
+
+        "🗑 SİPARİŞ İPTAL\n"
+        "Müşteri siparişten vazgeçtiyse "
+        "🗑 Sipariş İptal butonunu kullanın.\n\n"
+
+        "⚠️ Bir işi almadan önce doğru ID numarasını "
+        "seçtiğinizden emin olun.\n\n"
+
+        "TAKIM YILDIZI LOJİSTİK 🚚"
+    )
+
+    await update.message.reply_text(
+        mesaj,
         reply_markup=ana_menu
     )
 
@@ -367,7 +415,8 @@ async def is_id_al(
     if not siparis:
         await update.message.reply_text(
             "❌ Bu numarada açık bir iş bulunamadı.\n\n"
-            "Sipariş alınmış, iptal edilmiş veya numara yanlış olabilir.",
+            "Sipariş alınmış, iptal edilmiş veya "
+            "numara yanlış olabilir.",
             reply_markup=ana_menu
         )
 
@@ -520,7 +569,8 @@ async def siparis_iptal_baslat(
 
     await update.message.reply_text(
         "🗑 SİPARİŞ İPTAL\n\n"
-        "İptal edilecek açık siparişin 🆔 numarasını yazınız.\n\n"
+        "İptal edilecek açık siparişin 🆔 "
+        "numarasını yazınız.\n\n"
         "Örnek: 12"
     )
 
@@ -755,14 +805,9 @@ async def iptal(
 # =========================================================
 
 def main():
-    token = os.environ.get("BOT_TOKEN")
-
-    if not token:
-        raise RuntimeError("BOT_TOKEN bulunamadi.")
-
     application = (
         Application.builder()
-        .token(token)
+        .token(BOT_TOKEN)
         .build()
     )
 
@@ -883,19 +928,25 @@ def main():
         )
     )
 
-    print(
-        "Takim Yildizi Operasyon Bot baslatiliyor..."
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("^❓ Nasıl Kullanılır\\?$"),
+            nasil_kullanilir
+        )
     )
 
-    application.run_polling()
+    print(
+        "Takim Yildizi Operasyon Bot webhook ile baslatiliyor..."
+    )
+
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="telegram",
+        webhook_url=f"{WEBHOOK_URL}/telegram",
+        drop_pending_updates=False,
+    )
 
 
 if __name__ == "__main__":
-    web_thread = threading.Thread(
-        target=run_web,
-        daemon=True
-    )
-
-    web_thread.start()
-
     main()
