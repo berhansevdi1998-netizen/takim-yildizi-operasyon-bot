@@ -123,6 +123,8 @@ GONDERI_TIPI = 13
 TOPLU_GONDERILER = 14
 KARSI_ODEME_TUTAR = 15
 KARSI_ODEME_TELEFON = 16
+TAHSILAT_ID = 17
+TAHSILAT_ONAY = 18
 
 IPTAL_ID = 20
 IPTAL_ONAY = 21
@@ -137,6 +139,7 @@ ana_menu = ReplyKeyboardMarkup(
         ["➕ Sipariş Ekle"],
         ["📦 Açık İşler", "📥 İş Al"],
         ["🚚 Alınan İşler", "🗑 Sipariş İptal"],
+        ["📲 Karşı Ödemeliler"],
         ["❓ Nasıl Kullanılır?"],
     ],
     resize_keyboard=True
@@ -179,6 +182,16 @@ tek_gonderi_odeme_menu = ReplyKeyboardMarkup(
         ["❌ İşlemden Vazgeç"],
     ],
     resize_keyboard=True
+)
+
+
+tahsilat_onay_menu = ReplyKeyboardMarkup(
+    [
+        ["✅ Tahsil Edildi"],
+        ["❌ İşlemden Vazgeç"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
 )
 
 
@@ -876,6 +889,203 @@ async def toplu_gonderiler_al(
     return ConversationHandler.END
 
 
+async def karsi_odemeliler_baslat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    context.user_data.clear()
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    siparis_metni,
+                    kargo_ucreti,
+                    karsi_odeme_telefon,
+                    alan_personel,
+                    alinma_tarihi
+                FROM siparisler
+                WHERE odeme_tipi = 'KARŞI ÖDEMELİ'
+                  AND COALESCE(tahsilat_durumu, 'BEKLİYOR') = 'BEKLİYOR'
+                ORDER BY id ASC
+                """
+            )
+            kayitlar = cur.fetchall()
+
+    if not kayitlar:
+        await update.message.reply_text(
+            "✅ Bekleyen karşı ödemeli tahsilat bulunmuyor.",
+            reply_markup=ana_menu
+        )
+        return ConversationHandler.END
+
+    mesaj = "📲 BEKLEYEN KARŞI ÖDEMELİLER\n\n"
+
+    for (
+        siparis_id,
+        siparis_metni,
+        kargo_ucreti,
+        telefon,
+        personel,
+        alinma_tarihi
+    ) in kayitlar:
+        mesaj += (
+            f"🆔 #{siparis_id}\n"
+            f"📦 {siparis_metni}\n"
+            f"💰 {abs(float(kargo_ucreti or 0)):,.2f} ₺\n"
+            f"📞 {telefon or '-'}\n"
+            f"👤 İşi alan: {personel or '-'}\n"
+            "⏳ Tahsilat: BEKLİYOR\n"
+        )
+
+        if alinma_tarihi:
+            mesaj += f"🕐 {alinma_tarihi.strftime('%d.%m.%Y %H:%M')}\n"
+
+        mesaj += "\n"
+
+    mesaj += "Tahsil edilen siparişin ID numarasını yazınız."
+
+    await update.message.reply_text(
+        mesaj,
+        reply_markup=islem_iptal_menu
+    )
+
+    return TAHSILAT_ID
+
+
+async def tahsilat_id_al(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        siparis_id = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Geçerli bir sipariş ID numarası yazınız.",
+            reply_markup=islem_iptal_menu
+        )
+        return TAHSILAT_ID
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    siparis_metni,
+                    kargo_ucreti,
+                    karsi_odeme_telefon
+                FROM siparisler
+                WHERE id = %s
+                  AND odeme_tipi = 'KARŞI ÖDEMELİ'
+                  AND COALESCE(tahsilat_durumu, 'BEKLİYOR') = 'BEKLİYOR'
+                """,
+                (siparis_id,)
+            )
+            kayit = cur.fetchone()
+
+    if not kayit:
+        await update.message.reply_text(
+            "❌ Bu ID ile bekleyen karşı ödemeli kayıt bulunamadı.",
+            reply_markup=islem_iptal_menu
+        )
+        return TAHSILAT_ID
+
+    siparis_metni, tutar, telefon = kayit
+    context.user_data["tahsilat_siparis_id"] = siparis_id
+
+    await update.message.reply_text(
+        "📲 TAHSİLAT ONAYI\n\n"
+        f"🆔 #{siparis_id}\n"
+        f"📦 {siparis_metni}\n"
+        f"💰 {abs(float(tutar or 0)):,.2f} ₺\n"
+        f"📞 {telefon or '-'}\n\n"
+        "Para IBAN'a geldiyse aşağıdaki butona basınız.",
+        reply_markup=tahsilat_onay_menu
+    )
+
+    return TAHSILAT_ONAY
+
+
+async def tahsilat_onayla(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    if update.message.text.strip() != "✅ Tahsil Edildi":
+        await update.message.reply_text(
+            "Lütfen işlemi butondan onaylayınız.",
+            reply_markup=tahsilat_onay_menu
+        )
+        return TAHSILAT_ONAY
+
+    siparis_id = context.user_data.get("tahsilat_siparis_id")
+
+    if not siparis_id:
+        context.user_data.clear()
+        await update.message.reply_text(
+            "❌ Tahsilat kaydı bulunamadı. İşlemi yeniden başlatın.",
+            reply_markup=ana_menu
+        )
+        return ConversationHandler.END
+
+    tahsil_eden = kullanici_adi_getir(update)
+    tahsilat_tarihi = datetime.now()
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE siparisler
+                SET
+                    tahsilat_durumu = 'TAHSİL EDİLDİ',
+                    tahsilat_tarihi = %s,
+                    tahsil_eden = %s
+                WHERE id = %s
+                  AND odeme_tipi = 'KARŞI ÖDEMELİ'
+                  AND COALESCE(tahsilat_durumu, 'BEKLİYOR') = 'BEKLİYOR'
+                RETURNING
+                    siparis_metni,
+                    kargo_ucreti,
+                    karsi_odeme_telefon
+                """,
+                (
+                    tahsilat_tarihi,
+                    tahsil_eden,
+                    siparis_id
+                )
+            )
+            sonuc = cur.fetchone()
+
+        conn.commit()
+
+    context.user_data.clear()
+
+    if not sonuc:
+        await update.message.reply_text(
+            "⚠️ Bu tahsilat daha önce işaretlenmiş olabilir. "
+            "Bekleyen listeyi tekrar kontrol edin.",
+            reply_markup=ana_menu
+        )
+        return ConversationHandler.END
+
+    siparis_metni, tutar, telefon = sonuc
+
+    await update.message.reply_text(
+        "✅ TAHSİLAT TAMAMLANDI\n\n"
+        f"🆔 #{siparis_id}\n"
+        f"📦 {siparis_metni}\n"
+        f"💰 {abs(float(tutar or 0)):,.2f} ₺\n"
+        f"📞 {telefon or '-'}\n"
+        f"👤 Tahsil eden: {tahsil_eden}\n"
+        f"🕐 {tahsilat_tarihi.strftime('%d.%m.%Y %H:%M')}\n\n"
+        "Kayıt bekleyen karşı ödemeliler listesinden çıkarıldı.",
+        reply_markup=ana_menu
+    )
+
+    return ConversationHandler.END
+
+
 # =========================================================
 # SIPARIS IPTAL
 # =========================================================
@@ -1268,6 +1478,39 @@ def main():
         ],
     )
 
+    tahsilat_conversation = ConversationHandler(
+        entry_points=[
+            MessageHandler(
+                filters.Regex("^📲 Karşı Ödemeliler$"),
+                karsi_odemeliler_baslat
+            )
+        ],
+
+        states={
+            TAHSILAT_ID: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    tahsilat_id_al
+                )
+            ],
+
+            TAHSILAT_ONAY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    tahsilat_onayla
+                )
+            ],
+        },
+
+        fallbacks=[
+            MessageHandler(
+                filters.Regex("^❌ İşlemden Vazgeç$"),
+                iptal
+            ),
+            CommandHandler("iptal", iptal)
+        ],
+    )
+
     siparis_iptal_conversation = ConversationHandler(
         entry_points=[
             MessageHandler(
@@ -1311,6 +1554,10 @@ def main():
 
     application.add_handler(
         is_al_conversation
+    )
+
+    application.add_handler(
+        tahsilat_conversation
     )
 
     application.add_handler(
