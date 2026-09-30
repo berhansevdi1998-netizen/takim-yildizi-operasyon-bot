@@ -14,6 +14,7 @@ from telegram.ext import (
     filters,
 )
 
+
 # =========================================================
 # RENDER WEB SERVER
 # =========================================================
@@ -67,6 +68,7 @@ def veritabani_hazirla():
             """)
 
         conn.commit()
+
 
 veritabani_hazirla()
 
@@ -150,7 +152,7 @@ def acik_siparis_getir(siparis_id):
                     eklenme_tarihi
                 FROM siparisler
                 WHERE id = %s
-                AND durum = 'ACIK'
+                  AND durum = 'ACIK'
                 """,
                 (siparis_id,)
             )
@@ -274,7 +276,6 @@ async def acik_isler(
             "✅ Şu anda bekleyen açık iş yok.",
             reply_markup=ana_menu
         )
-
         return
 
     mesaj = (
@@ -382,7 +383,8 @@ async def is_onayla(
 
     await update.message.reply_text(
         "💰 Kargo ücretini yazınız.\n\n"
-        "Örnek: 900"
+        "💵 Nakit ise pozitif yazın: 900\n"
+        "📒 Vadeli ise eksi yazın: -900"
     )
 
     return KARGO_UCRETI
@@ -400,14 +402,17 @@ async def kargo_ucreti_al(
     except ValueError:
         await update.message.reply_text(
             "❌ Kargo ücretini anlayamadım.\n\n"
-            "Örnek: 900"
+            "Nakit örnek: 900\n"
+            "Vadeli örnek: -900"
         )
 
         return KARGO_UCRETI
-if kargo_ucreti > 0:
-    odeme_tipi = "NAKİT"
-else:
-    odeme_tipi = "VADELİ"
+
+    if kargo_ucreti > 0:
+        odeme_tipi = "NAKİT"
+    else:
+        odeme_tipi = "VADELİ"
+
     siparis_id = context.user_data["siparis_id"]
 
     kullanici = update.effective_user
@@ -427,23 +432,24 @@ else:
                 """
                 UPDATE siparisler
                 SET
-    durum = 'ALINDI',
-    alan_personel = %s,
-    alinma_tarihi = %s,
-    kargo_ucreti = %s,
-    odeme_tipi = %s
+                    durum = 'ALINDI',
+                    alan_personel = %s,
+                    alinma_tarihi = %s,
+                    kargo_ucreti = %s,
+                    odeme_tipi = %s
                 WHERE id = %s
-                AND durum = 'ACIK'
+                  AND durum = 'ACIK'
                 RETURNING siparis_metni
                 """,
-        (
-    personel,
-    alinma_tarihi,
-    kargo_ucreti,
-    odeme_tipi,
-    siparis_id
-)
-)
+                (
+                    personel,
+                    alinma_tarihi,
+                    kargo_ucreti,
+                    odeme_tipi,
+                    siparis_id
+                )
+            )
+
             sonuc = cur.fetchone()
 
         conn.commit()
@@ -468,7 +474,7 @@ else:
         f"📦 {siparis_metni}\n"
         f"👤 Alan: {personel}\n"
         f"💳 Ödeme Tipi: {odeme_tipi}\n"
-f"💰 Kargo Ücreti: {abs(kargo_ucreti):,.2f} ₺\n"
+        f"💰 Kargo Ücreti: {abs(kargo_ucreti):,.2f} ₺\n"
         f"🕐 Saat: {alinma_tarihi.strftime('%H:%M')}\n\n"
         "Bu iş artık Açık İşler listesinden çıkarıldı.",
         reply_markup=ana_menu
