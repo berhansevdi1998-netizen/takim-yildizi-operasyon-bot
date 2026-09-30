@@ -233,10 +233,8 @@ async def nasil_kullanilir(
         "4️⃣ Kargo ücretini yazın.\n\n"
 
         "💰 KARGO ÜCRETİ\n"
-        "💵 Nakit aldıysanız normal yazın:\n"
-        "900\n\n"
-        "📒 Vadeli / cari ise eksi yazın:\n"
-        "-900\n\n"
+        "💵 Nakit aldıysanız tutarı normal yazın.\n\n"
+        "📒 Vadeli / cari ise tutarı eksi olarak yazın.\n\n"
 
         "✅ İş alındığında otomatik olarak "
         "Açık İşler listesinden çıkar.\n\n"
