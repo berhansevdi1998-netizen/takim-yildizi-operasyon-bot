@@ -73,6 +73,18 @@ def veritabani_hazirla():
                 ADD COLUMN IF NOT EXISTS iptal_eden TEXT
             """)
 
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS toplu_gonderiler (
+                    id BIGSERIAL PRIMARY KEY,
+                    siparis_id BIGINT NOT NULL,
+                    sehir TEXT NOT NULL,
+                    kargo_ucreti NUMERIC(15,2) NOT NULL,
+                    odeme_tipi TEXT NOT NULL,
+                    eklenme_tarihi TIMESTAMP NOT NULL
+                )
+            """)
+
         conn.commit()
 
 
@@ -87,6 +99,8 @@ SIPARIS_METNI = 1
 
 IS_ID = 10
 KARGO_UCRETI = 12
+GONDERI_TIPI = 13
+TOPLU_GONDERILER = 14
 
 IPTAL_ID = 20
 IPTAL_ONAY = 21
@@ -120,6 +134,16 @@ iptal_onay_menu = ReplyKeyboardMarkup(
 
 islem_iptal_menu = ReplyKeyboardMarkup(
     [
+        ["❌ İşlemden Vazgeç"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
+
+gonderi_tipi_menu = ReplyKeyboardMarkup(
+    [
+        ["📦 Tek Gönderi", "📦 Toplu Gönderi"],
         ["❌ İşlemden Vazgeç"],
     ],
     resize_keyboard=True,
@@ -227,7 +251,9 @@ async def nasil_kullanilir(
         "📥 İŞ ALMA\n"
         "1️⃣ 📥 İş Al butonuna basın.\n"
         "2️⃣ Aldığınız işin ID numarasını yazın.\n"
-        "3️⃣ Kargo ücretini yazın.\n\n"
+        "3️⃣ Tek Gönderi veya Toplu Gönderi seçin.\n"
+        "4️⃣ Tek gönderide kargo ücretini yazın.\n"
+        "5️⃣ Toplu gönderide şehir ve ücretleri alt alta yazın.\n\n"
 
         "💰 KARGO ÜCRETİ\n"
         "💵 Nakit aldıysanız tutarı normal yazın.\n\n"
@@ -420,20 +446,50 @@ async def is_id_al(
         return ConversationHandler.END
 
     context.user_data["siparis_id"] = siparis_id
-
     _, siparis_metni, _ = siparis
 
     await update.message.reply_text(
         "📦 SEÇİLEN İŞ\n\n"
         f"🆔 #{siparis_id}\n"
         f"📦 {siparis_metni}\n\n"
-        "💰 Kargo ücretini yazınız.\n\n"
-        "💵 Nakit ise tutarı normal yazın.\n"
-        "📒 Vadeli / cari ise tutarı eksi olarak yazın.",
-        reply_markup=islem_iptal_menu
+        "Gönderi tipini seçiniz.",
+        reply_markup=gonderi_tipi_menu
     )
 
-    return KARGO_UCRETI
+    return GONDERI_TIPI
+
+
+async def gonderi_tipi_sec(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    secim = update.message.text.strip()
+
+    if secim == "📦 Tek Gönderi":
+        await update.message.reply_text(
+            "💰 Kargo ücretini yazınız.\n\n"
+            "💵 Nakit ise tutarı normal yazın.\n"
+            "📒 Vadeli / cari ise tutarı eksi olarak yazın.",
+            reply_markup=islem_iptal_menu
+        )
+        return KARGO_UCRETI
+
+    if secim == "📦 Toplu Gönderi":
+        await update.message.reply_text(
+            "📦 TOPLU GÖNDERİ\n\n"
+            "Şehir ve ücretleri alt alta yazınız.\n"
+            "Her satırda önce şehir, sonra tutar olmalıdır.\n\n"
+            "💵 Nakit tutarı normal yazın.\n"
+            "📒 Vadeli / cari tutarı eksi olarak yazın.",
+            reply_markup=islem_iptal_menu
+        )
+        return TOPLU_GONDERILER
+
+    await update.message.reply_text(
+        "Lütfen gönderi tipini butonlardan seçiniz.",
+        reply_markup=gonderi_tipi_menu
+    )
+    return GONDERI_TIPI
 
 
 async def kargo_ucreti_al(
@@ -517,6 +573,161 @@ async def kargo_ucreti_al(
     )
 
     context.user_data.clear()
+
+    return ConversationHandler.END
+
+
+async def toplu_gonderiler_al(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    satirlar = [
+        satir.strip()
+        for satir in update.message.text.splitlines()
+        if satir.strip()
+    ]
+
+    if not satirlar:
+        await update.message.reply_text(
+            "❌ Gönderi bilgisi boş olamaz.",
+            reply_markup=islem_iptal_menu
+        )
+        return TOPLU_GONDERILER
+
+    gonderiler = []
+
+    for satir in satirlar:
+        parcalar = satir.rsplit(maxsplit=1)
+
+        if len(parcalar) != 2:
+            await update.message.reply_text(
+                f"❌ Bu satırı anlayamadım:\n{satir}\n\n"
+                "Her satırda önce şehir, sonra tutar yazınız.",
+                reply_markup=islem_iptal_menu
+            )
+            return TOPLU_GONDERILER
+
+        sehir, tutar_metni = parcalar
+
+        try:
+            tutar = tutar_cevir(tutar_metni)
+        except ValueError:
+            await update.message.reply_text(
+                f"❌ Bu satırdaki tutarı anlayamadım:\n{satir}",
+                reply_markup=islem_iptal_menu
+            )
+            return TOPLU_GONDERILER
+
+        odeme_tipi = "NAKİT" if tutar > 0 else "VADELİ"
+        gonderiler.append((sehir, tutar, odeme_tipi))
+
+    siparis_id = context.user_data["siparis_id"]
+    personel = kullanici_adi_getir(update)
+    alinma_tarihi = datetime.now()
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE siparisler
+                SET
+                    durum = 'ALINDI',
+                    alan_personel = %s,
+                    alinma_tarihi = %s,
+                    kargo_ucreti = %s,
+                    odeme_tipi = %s
+                WHERE id = %s
+                  AND durum = 'ACIK'
+                RETURNING siparis_metni
+                """,
+                (
+                    personel,
+                    alinma_tarihi,
+                    sum(tutar for _, tutar, _ in gonderiler),
+                    "TOPLU",
+                    siparis_id
+                )
+            )
+            sonuc = cur.fetchone()
+
+            if sonuc:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS toplu_gonderiler (
+                        id BIGSERIAL PRIMARY KEY,
+                        siparis_id BIGINT NOT NULL,
+                        sehir TEXT NOT NULL,
+                        kargo_ucreti NUMERIC(15,2) NOT NULL,
+                        odeme_tipi TEXT NOT NULL,
+                        eklenme_tarihi TIMESTAMP NOT NULL
+                    )
+                """)
+
+                for sehir, tutar, odeme_tipi in gonderiler:
+                    cur.execute(
+                        """
+                        INSERT INTO toplu_gonderiler
+                        (
+                            siparis_id,
+                            sehir,
+                            kargo_ucreti,
+                            odeme_tipi,
+                            eklenme_tarihi
+                        )
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (
+                            siparis_id,
+                            sehir,
+                            tutar,
+                            odeme_tipi,
+                            alinma_tarihi
+                        )
+                    )
+
+        conn.commit()
+
+    if not sonuc:
+        context.user_data.clear()
+        await update.message.reply_text(
+            "⚠️ Bu iş siz işlem yaparken başka bir personel "
+            "tarafından alınmış veya iptal edilmiş.",
+            reply_markup=ana_menu
+        )
+        return ConversationHandler.END
+
+    siparis_metni = sonuc[0]
+    nakit_toplam = sum(
+        abs(tutar) for _, tutar, tip in gonderiler if tip == "NAKİT"
+    )
+    vadeli_toplam = sum(
+        abs(tutar) for _, tutar, tip in gonderiler if tip == "VADELİ"
+    )
+
+    mesaj = (
+        "✅ TOPLU İŞ ALINDI\n\n"
+        f"🆔 #{siparis_id}\n"
+        f"📦 {siparis_metni}\n"
+        f"👤 Alan: {personel}\n\n"
+    )
+
+    for sehir, tutar, odeme_tipi in gonderiler:
+        mesaj += (
+            f"📍 {sehir} — {abs(tutar):,.2f} ₺ — {odeme_tipi}\n"
+        )
+
+    mesaj += (
+        f"\n📦 {len(gonderiler)} gönderi\n"
+        f"💵 Nakit Toplam: {nakit_toplam:,.2f} ₺\n"
+        f"📒 Vadeli Toplam: {vadeli_toplam:,.2f} ₺\n"
+        f"💰 Genel Toplam: {nakit_toplam + vadeli_toplam:,.2f} ₺"
+    )
+
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        mesaj,
+        reply_markup=ana_menu
+    )
 
     return ConversationHandler.END
 
@@ -711,20 +922,56 @@ async def alinan_isler(
     ) in kayitlar:
 
         ucret = abs(float(kargo_ucreti or 0))
-        toplam += ucret
 
-        if odeme_tipi == "NAKİT":
-            nakit_toplam += ucret
-        elif odeme_tipi == "VADELİ":
-            vadeli_toplam += ucret
+        if odeme_tipi != "TOPLU":
+            toplam += ucret
+
+            if odeme_tipi == "NAKİT":
+                nakit_toplam += ucret
+            elif odeme_tipi == "VADELİ":
+                vadeli_toplam += ucret
 
         mesaj += (
             f"🆔 #{siparis_id}\n"
             f"📦 {siparis_metni}\n"
             f"👤 {personel or '-'}\n"
-            f"💳 {odeme_tipi or '-'}\n"
-            f"💰 {ucret:,.2f} ₺\n"
         )
+
+        if odeme_tipi == "TOPLU":
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT sehir, kargo_ucreti, odeme_tipi
+                        FROM toplu_gonderiler
+                        WHERE siparis_id = %s
+                        ORDER BY id ASC
+                        """,
+                        (siparis_id,)
+                    )
+                    alt_gonderiler = cur.fetchall()
+
+            for sehir, alt_tutar, alt_tip in alt_gonderiler:
+                mesaj += (
+                    f"📍 {sehir} — {abs(float(alt_tutar)):,.2f} ₺ "
+                    f"— {alt_tip}\n"
+                )
+
+            ucret = sum(abs(float(x[1])) for x in alt_gonderiler)
+            nakit_toplam += sum(
+                abs(float(x[1])) for x in alt_gonderiler
+                if x[2] == "NAKİT"
+            )
+            vadeli_toplam += sum(
+                abs(float(x[1])) for x in alt_gonderiler
+                if x[2] == "VADELİ"
+            )
+            toplam += ucret
+        else:
+            mesaj += (
+                f"💳 {odeme_tipi or '-'}\n"
+                f"💰 {ucret:,.2f} ₺\n"
+            )
 
         if alinma_tarihi:
             mesaj += (
@@ -818,10 +1065,24 @@ def main():
             ],
 
 
+            GONDERI_TIPI: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    gonderi_tipi_sec
+                )
+            ],
+
             KARGO_UCRETI: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     kargo_ucreti_al
+                )
+            ],
+
+            TOPLU_GONDERILER: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    toplu_gonderiler_al
                 )
             ],
         },
