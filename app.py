@@ -68,20 +68,90 @@ veritabani_hazirla()
 
 
 # =========================================================
-# TELEGRAM
+# DURUMLAR
 # =========================================================
 
 SIPARIS_METNI = 1
 
+IS_ID = 10
+IS_ONAY = 11
+KARGO_UCRETI = 12
+
+
+# =========================================================
+# MENULER
+# =========================================================
 
 ana_menu = ReplyKeyboardMarkup(
     [
         ["➕ Sipariş Ekle"],
-        ["📦 Açık İşler"],
+        ["📦 Açık İşler", "📥 İş Al"],
         ["🚚 Alınan İşler"],
     ],
     resize_keyboard=True
 )
+
+
+is_onay_menu = ReplyKeyboardMarkup(
+    [
+        ["✅ Bu İşi Aldım"],
+        ["❌ Vazgeç"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
+
+# =========================================================
+# YARDIMCI FONKSIYONLAR
+# =========================================================
+
+def tutar_cevir(text):
+    text = (
+        text.strip()
+        .replace("₺", "")
+        .replace("TL", "")
+        .replace("tl", "")
+        .replace(" ", "")
+    )
+
+    if "," in text and "." in text:
+        text = text.replace(".", "").replace(",", ".")
+
+    elif "," in text:
+        text = text.replace(",", ".")
+
+    elif "." in text:
+        parcalar = text.split(".")
+
+        if len(parcalar[-1]) == 3:
+            text = text.replace(".", "")
+
+    tutar = float(text)
+
+    if tutar < 0:
+        raise ValueError
+
+    return tutar
+
+
+def acik_siparis_getir(siparis_id):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id,
+                    siparis_metni,
+                    eklenme_tarihi
+                FROM siparisler
+                WHERE id = %s
+                AND durum = 'ACIK'
+                """,
+                (siparis_id,)
+            )
+
+            return cur.fetchone()
 
 
 # =========================================================
@@ -110,6 +180,8 @@ async def siparis_baslat(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+    context.user_data.clear()
+
     await update.message.reply_text(
         "📦 Sipariş bilgisini yazınız.\n\n"
         "Örnek:\n"
@@ -185,8 +257,7 @@ async def acik_isler(
             cur.execute("""
                 SELECT
                     id,
-                    siparis_metni,
-                    eklenme_tarihi
+                    siparis_metni
                 FROM siparisler
                 WHERE durum = 'ACIK'
                 ORDER BY id ASC
@@ -206,7 +277,7 @@ async def acik_isler(
         f"📦 AÇIK İŞLER — {len(kayitlar)} ADET\n\n"
     )
 
-    for siparis_id, siparis_metni, tarih in kayitlar:
+    for siparis_id, siparis_metni in kayitlar:
         mesaj += (
             f"🆔 #{siparis_id}\n"
             f"📦 {siparis_metni}\n"
@@ -220,16 +291,256 @@ async def acik_isler(
 
 
 # =========================================================
-# ALINAN ISLER - SIMDILIK BOS
+# IS AL
+# =========================================================
+
+async def is_al_baslat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "📥 ALINACAK İŞ\n\n"
+        "Aldığınız siparişin 🆔 numarasını yazınız.\n\n"
+        "Örnek: 12"
+    )
+
+    return IS_ID
+
+
+async def is_id_al(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        siparis_id = int(update.message.text.strip())
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Geçerli bir sipariş numarası yazınız.\n"
+            "Örnek: 12"
+        )
+
+        return IS_ID
+
+    siparis = acik_siparis_getir(siparis_id)
+
+    if not siparis:
+        await update.message.reply_text(
+            "❌ Bu numarada açık bir iş bulunamadı.\n\n"
+            "Sipariş alınmış veya numara yanlış olabilir.",
+            reply_markup=ana_menu
+        )
+
+        context.user_data.clear()
+
+        return ConversationHandler.END
+
+    context.user_data["siparis_id"] = siparis_id
+
+    _, siparis_metni, _ = siparis
+
+    await update.message.reply_text(
+        "📦 SEÇİLEN İŞ\n\n"
+        f"🆔 #{siparis_id}\n"
+        f"📦 {siparis_metni}\n\n"
+        "Bu işi siz mi aldınız?",
+        reply_markup=is_onay_menu
+    )
+
+    return IS_ONAY
+
+
+async def is_onayla(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    secim = update.message.text.strip()
+
+    if secim == "❌ Vazgeç":
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "İşlem iptal edildi.",
+            reply_markup=ana_menu
+        )
+
+        return ConversationHandler.END
+
+    if secim != "✅ Bu İşi Aldım":
+        await update.message.reply_text(
+            "Lütfen butonlardan seçim yapınız.",
+            reply_markup=is_onay_menu
+        )
+
+        return IS_ONAY
+
+    await update.message.reply_text(
+        "💰 Kargo ücretini yazınız.\n\n"
+        "Örnek: 900"
+    )
+
+    return KARGO_UCRETI
+
+
+async def kargo_ucreti_al(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        kargo_ucreti = tutar_cevir(
+            update.message.text
+        )
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Kargo ücretini anlayamadım.\n\n"
+            "Örnek: 900"
+        )
+
+        return KARGO_UCRETI
+
+    siparis_id = context.user_data["siparis_id"]
+
+    kullanici = update.effective_user
+
+    if kullanici.full_name:
+        personel = kullanici.full_name
+    elif kullanici.username:
+        personel = f"@{kullanici.username}"
+    else:
+        personel = str(kullanici.id)
+
+    alinma_tarihi = datetime.now()
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE siparisler
+                SET
+                    durum = 'ALINDI',
+                    alan_personel = %s,
+                    alinma_tarihi = %s,
+                    kargo_ucreti = %s
+                WHERE id = %s
+                AND durum = 'ACIK'
+                RETURNING siparis_metni
+                """,
+                (
+                    personel,
+                    alinma_tarihi,
+                    kargo_ucreti,
+                    siparis_id
+                )
+            )
+
+            sonuc = cur.fetchone()
+
+        conn.commit()
+
+    if not sonuc:
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "⚠️ Bu iş siz işlem yaparken başka bir "
+            "personel tarafından alınmış.\n\n"
+            "📦 Açık İşler listesini tekrar kontrol edin.",
+            reply_markup=ana_menu
+        )
+
+        return ConversationHandler.END
+
+    siparis_metni = sonuc[0]
+
+    await update.message.reply_text(
+        "✅ İŞ ALINDI\n\n"
+        f"🆔 #{siparis_id}\n"
+        f"📦 {siparis_metni}\n"
+        f"👤 Alan: {personel}\n"
+        f"💰 Kargo Ücreti: {kargo_ucreti:,.2f} ₺\n"
+        f"🕐 Saat: {alinma_tarihi.strftime('%H:%M')}\n\n"
+        "Bu iş artık Açık İşler listesinden çıkarıldı.",
+        reply_markup=ana_menu
+    )
+
+    context.user_data.clear()
+
+    return ConversationHandler.END
+
+
+# =========================================================
+# ALINAN ISLER
 # =========================================================
 
 async def alinan_isler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    id,
+                    siparis_metni,
+                    alan_personel,
+                    kargo_ucreti,
+                    alinma_tarihi
+                FROM siparisler
+                WHERE durum = 'ALINDI'
+                ORDER BY alinma_tarihi DESC
+                LIMIT 50
+            """)
+
+            kayitlar = cur.fetchall()
+
+    if not kayitlar:
+        await update.message.reply_text(
+            "🚚 Henüz alınan iş bulunmuyor.",
+            reply_markup=ana_menu
+        )
+
+        return
+
+    mesaj = (
+        f"🚚 ALINAN İŞLER — {len(kayitlar)} ADET\n\n"
+    )
+
+    toplam = 0
+
+    for (
+        siparis_id,
+        siparis_metni,
+        personel,
+        kargo_ucreti,
+        alinma_tarihi
+    ) in kayitlar:
+
+        ucret = float(kargo_ucreti or 0)
+        toplam += ucret
+
+        mesaj += (
+            f"🆔 #{siparis_id}\n"
+            f"📦 {siparis_metni}\n"
+            f"👤 {personel or '-'}\n"
+            f"💰 {ucret:,.2f} ₺\n"
+        )
+
+        if alinma_tarihi:
+            mesaj += (
+                f"🕐 {alinma_tarihi.strftime('%H:%M')}\n"
+            )
+
+        mesaj += "────────────\n"
+
+    mesaj += (
+        "\n💰 TOPLAM KARGO ÜCRETİ\n"
+        f"{toplam:,.2f} ₺"
+    )
+
     await update.message.reply_text(
-        "🚚 Alınan işler sistemi bir sonraki "
-        "adımda aktif edilecek.",
+        mesaj,
         reply_markup=ana_menu
     )
 
@@ -290,12 +601,52 @@ def main():
         ],
     )
 
+    is_al_conversation = ConversationHandler(
+        entry_points=[
+            MessageHandler(
+                filters.Regex("^📥 İş Al$"),
+                is_al_baslat
+            )
+        ],
+
+        states={
+            IS_ID: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    is_id_al
+                )
+            ],
+
+            IS_ONAY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    is_onayla
+                )
+            ],
+
+            KARGO_UCRETI: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    kargo_ucreti_al
+                )
+            ],
+        },
+
+        fallbacks=[
+            CommandHandler("iptal", iptal)
+        ],
+    )
+
     application.add_handler(
         CommandHandler("start", start)
     )
 
     application.add_handler(
         siparis_conversation
+    )
+
+    application.add_handler(
+        is_al_conversation
     )
 
     application.add_handler(
