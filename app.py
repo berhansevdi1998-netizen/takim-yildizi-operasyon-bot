@@ -517,37 +517,39 @@ async def alinan_isler(
         f"🚚 ALINAN İŞLER — {len(kayitlar)} ADET\n\n"
     )
 
-    toplam = 0
-nakit_toplam = 0
-vadeli_toplam = 0
+       toplam = 0
+    nakit_toplam = 0
+    vadeli_toplam = 0
+
     for (
-    siparis_id,
-    siparis_metni,
-    personel,
-    kargo_ucreti,
-    odeme_tipi,
-    alinma_tarihi
-) in kayitlar:
+        siparis_id,
+        siparis_metni,
+        personel,
+        kargo_ucreti,
+        odeme_tipi,
+        alinma_tarihi
+    ) in kayitlar:
         ucret = abs(float(kargo_ucreti or 0))
-toplam += ucret
-if odeme_tipi == "NAKİT":
-    nakit_toplam += ucret
-elif odeme_tipi == "VADELİ":
-    vadeli_toplam += ucret
+        toplam += ucret
+
+        if odeme_tipi == "NAKİT":
+            nakit_toplam += ucret
+        elif odeme_tipi == "VADELİ":
+            vadeli_toplam += ucret
         mesaj += (
             f"🆔 #{siparis_id}\n"
             f"📦 {siparis_metni}\n"
             f"👤 {personel or '-'}\n"
             f"💳 {odeme_tipi or '-'}\n"
-f"💰 {ucret:,.2f} ₺\n"
+            f"💰 {ucret:,.2f} ₺\n"
         )
 
-        if alinma_tarihi:
+            if alinma_tarihi:
             mesaj += (
                 f"🕐 {alinma_tarihi.strftime('%H:%M')}\n"
             )
 
-        mesaj += "────────────\n"
+            mesaj += "────────────\n"
 
    mesaj += (
     "\n💰 GÜN SONU TOPLAMLARI\n\n"
