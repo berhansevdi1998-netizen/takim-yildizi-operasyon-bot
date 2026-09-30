@@ -445,7 +445,7 @@ async def is_onayla(
     if secim == "❌ Vazgeç":
         context.user_data.clear()
 
-        await update.message.reply_text(
+         await update.message.reply_text(
             "İşlem iptal edildi.",
             reply_markup=ana_menu
         )
@@ -459,15 +459,13 @@ async def is_onayla(
         )
         return IS_ONAY
 
-   await update.message.reply_text(
-    "💰 Kargo ücretini yazınız.\n\n"
-    "💵 Nakit ise tutarı normal yazın.\n"
-    "📒 Vadeli / cari ise tutarı eksi olarak yazın."
+    await update.message.reply_text(
+        "💰 Kargo ücretini yazınız.\n\n"
+        "💵 Nakit ise tutarı normal yazın.\n"
+        "📒 Vadeli / cari ise tutarı eksi olarak yazın."
     )
 
     return KARGO_UCRETI
-
-
 async def kargo_ucreti_al(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
