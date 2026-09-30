@@ -67,6 +67,16 @@ def veritabani_hazirla():
                 ADD COLUMN IF NOT EXISTS odeme_tipi TEXT
             """)
 
+            cur.execute("""
+                ALTER TABLE siparisler
+                ADD COLUMN IF NOT EXISTS iptal_tarihi TIMESTAMP
+            """)
+
+            cur.execute("""
+                ALTER TABLE siparisler
+                ADD COLUMN IF NOT EXISTS iptal_eden TEXT
+            """)
+
         conn.commit()
 
 
@@ -83,6 +93,9 @@ IS_ID = 10
 IS_ONAY = 11
 KARGO_UCRETI = 12
 
+IPTAL_ID = 20
+IPTAL_ONAY = 21
+
 
 # =========================================================
 # MENULER
@@ -92,7 +105,7 @@ ana_menu = ReplyKeyboardMarkup(
     [
         ["➕ Sipariş Ekle"],
         ["📦 Açık İşler", "📥 İş Al"],
-        ["🚚 Alınan İşler"],
+        ["🚚 Alınan İşler", "🗑 Sipariş İptal"],
     ],
     resize_keyboard=True
 )
@@ -101,6 +114,16 @@ ana_menu = ReplyKeyboardMarkup(
 is_onay_menu = ReplyKeyboardMarkup(
     [
         ["✅ Bu İşi Aldım"],
+        ["❌ Vazgeç"],
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
+
+iptal_onay_menu = ReplyKeyboardMarkup(
+    [
+        ["✅ İptal Et"],
         ["❌ Vazgeç"],
     ],
     resize_keyboard=True,
@@ -160,6 +183,18 @@ def acik_siparis_getir(siparis_id):
             return cur.fetchone()
 
 
+def kullanici_adi_getir(update):
+    kullanici = update.effective_user
+
+    if kullanici.full_name:
+        return kullanici.full_name
+
+    if kullanici.username:
+        return f"@{kullanici.username}"
+
+    return str(kullanici.id)
+
+
 # =========================================================
 # START
 # =========================================================
@@ -209,7 +244,6 @@ async def siparis_kaydet(
         await update.message.reply_text(
             "❌ Sipariş bilgisi boş olamaz."
         )
-
         return SIPARIS_METNI
 
     tarih = datetime.now()
@@ -326,7 +360,6 @@ async def is_id_al(
             "❌ Geçerli bir sipariş numarası yazınız.\n"
             "Örnek: 12"
         )
-
         return IS_ID
 
     siparis = acik_siparis_getir(siparis_id)
@@ -334,7 +367,7 @@ async def is_id_al(
     if not siparis:
         await update.message.reply_text(
             "❌ Bu numarada açık bir iş bulunamadı.\n\n"
-            "Sipariş alınmış veya numara yanlış olabilir.",
+            "Sipariş alınmış, iptal edilmiş veya numara yanlış olabilir.",
             reply_markup=ana_menu
         )
 
@@ -378,7 +411,6 @@ async def is_onayla(
             "Lütfen butonlardan seçim yapınız.",
             reply_markup=is_onay_menu
         )
-
         return IS_ONAY
 
     await update.message.reply_text(
@@ -405,7 +437,6 @@ async def kargo_ucreti_al(
             "Nakit örnek: 900\n"
             "Vadeli örnek: -900"
         )
-
         return KARGO_UCRETI
 
     if kargo_ucreti > 0:
@@ -415,15 +446,7 @@ async def kargo_ucreti_al(
 
     siparis_id = context.user_data["siparis_id"]
 
-    kullanici = update.effective_user
-
-    if kullanici.full_name:
-        personel = kullanici.full_name
-    elif kullanici.username:
-        personel = f"@{kullanici.username}"
-    else:
-        personel = str(kullanici.id)
-
+    personel = kullanici_adi_getir(update)
     alinma_tarihi = datetime.now()
 
     with get_db() as conn:
@@ -459,7 +482,7 @@ async def kargo_ucreti_al(
 
         await update.message.reply_text(
             "⚠️ Bu iş siz işlem yaparken başka bir "
-            "personel tarafından alınmış.\n\n"
+            "personel tarafından alınmış veya iptal edilmiş.\n\n"
             "📦 Açık İşler listesini tekrar kontrol edin.",
             reply_markup=ana_menu
         )
@@ -481,6 +504,144 @@ async def kargo_ucreti_al(
     )
 
     context.user_data.clear()
+
+    return ConversationHandler.END
+
+
+# =========================================================
+# SIPARIS IPTAL
+# =========================================================
+
+async def siparis_iptal_baslat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    context.user_data.clear()
+
+    await update.message.reply_text(
+        "🗑 SİPARİŞ İPTAL\n\n"
+        "İptal edilecek açık siparişin 🆔 numarasını yazınız.\n\n"
+        "Örnek: 12"
+    )
+
+    return IPTAL_ID
+
+
+async def siparis_iptal_id_al(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        siparis_id = int(update.message.text.strip())
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Geçerli bir sipariş numarası yazınız.\n"
+            "Örnek: 12"
+        )
+        return IPTAL_ID
+
+    siparis = acik_siparis_getir(siparis_id)
+
+    if not siparis:
+        await update.message.reply_text(
+            "❌ Bu numarada açık bir sipariş bulunamadı.\n\n"
+            "Sipariş daha önce alınmış, iptal edilmiş "
+            "veya numara yanlış olabilir.",
+            reply_markup=ana_menu
+        )
+
+        context.user_data.clear()
+
+        return ConversationHandler.END
+
+    context.user_data["iptal_siparis_id"] = siparis_id
+
+    _, siparis_metni, _ = siparis
+
+    await update.message.reply_text(
+        "⚠️ İPTAL ONAYI\n\n"
+        f"🆔 #{siparis_id}\n"
+        f"📦 {siparis_metni}\n\n"
+        "Bu siparişi iptal etmek istediğinize emin misiniz?",
+        reply_markup=iptal_onay_menu
+    )
+
+    return IPTAL_ONAY
+
+
+async def siparis_iptal_onayla(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    secim = update.message.text.strip()
+
+    if secim == "❌ Vazgeç":
+        context.user_data.clear()
+
+        await update.message.reply_text(
+            "✅ Sipariş iptal edilmedi.",
+            reply_markup=ana_menu
+        )
+
+        return ConversationHandler.END
+
+    if secim != "✅ İptal Et":
+        await update.message.reply_text(
+            "Lütfen butonlardan seçim yapınız.",
+            reply_markup=iptal_onay_menu
+        )
+        return IPTAL_ONAY
+
+    siparis_id = context.user_data["iptal_siparis_id"]
+    iptal_eden = kullanici_adi_getir(update)
+    iptal_tarihi = datetime.now()
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE siparisler
+                SET
+                    durum = 'IPTAL',
+                    iptal_tarihi = %s,
+                    iptal_eden = %s
+                WHERE id = %s
+                  AND durum = 'ACIK'
+                RETURNING siparis_metni
+                """,
+                (
+                    iptal_tarihi,
+                    iptal_eden,
+                    siparis_id
+                )
+            )
+
+            sonuc = cur.fetchone()
+
+        conn.commit()
+
+    context.user_data.clear()
+
+    if not sonuc:
+        await update.message.reply_text(
+            "⚠️ Bu sipariş siz işlem yaparken başka bir "
+            "personel tarafından alınmış veya iptal edilmiş.\n\n"
+            "📦 Açık İşler listesini tekrar kontrol edin.",
+            reply_markup=ana_menu
+        )
+
+        return ConversationHandler.END
+
+    siparis_metni = sonuc[0]
+
+    await update.message.reply_text(
+        "🗑 SİPARİŞ İPTAL EDİLDİ\n\n"
+        f"🆔 #{siparis_id}\n"
+        f"📦 {siparis_metni}\n\n"
+        "Sipariş Açık İşler listesinden çıkarıldı.",
+        reply_markup=ana_menu
+    )
 
     return ConversationHandler.END
 
@@ -572,7 +733,7 @@ async def alinan_isler(
 
 
 # =========================================================
-# IPTAL
+# GENEL IPTAL
 # =========================================================
 
 async def iptal(
@@ -663,6 +824,35 @@ def main():
         ],
     )
 
+    siparis_iptal_conversation = ConversationHandler(
+        entry_points=[
+            MessageHandler(
+                filters.Regex("^🗑 Sipariş İptal$"),
+                siparis_iptal_baslat
+            )
+        ],
+
+        states={
+            IPTAL_ID: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    siparis_iptal_id_al
+                )
+            ],
+
+            IPTAL_ONAY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    siparis_iptal_onayla
+                )
+            ],
+        },
+
+        fallbacks=[
+            CommandHandler("iptal", iptal)
+        ],
+    )
+
     application.add_handler(
         CommandHandler("start", start)
     )
@@ -673,6 +863,10 @@ def main():
 
     application.add_handler(
         is_al_conversation
+    )
+
+    application.add_handler(
+        siparis_iptal_conversation
     )
 
     application.add_handler(
