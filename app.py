@@ -2,8 +2,6 @@ import os
 import json
 import base64
 import io
-import re
-import logging
 from decimal import Decimal
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -12,7 +10,6 @@ import psycopg
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
-    ApplicationHandlerStop,
     CommandHandler,
     MessageHandler,
     ConversationHandler,
@@ -152,7 +149,6 @@ def veritabani_hazirla():
                     tarih TIMESTAMP NOT NULL
                 )
             """)
-            cur.execute("""CREATE TABLE IF NOT EXISTS operasyon_grup_ayari (id INTEGER PRIMARY KEY, grup_id BIGINT NOT NULL, sabit_mesaj_id BIGINT)""")
             cur.execute("ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS yola_cikan_id BIGINT")
             cur.execute("ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS yola_cikan_adi TEXT")
             cur.execute("ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS yola_cikis_tarihi TIMESTAMP")
@@ -168,138 +164,6 @@ def veritabani_hazirla():
 
 
 veritabani_hazirla()
-
-
-
-# =========================================================
-# OPERASYON GRUBU: OZELDEN ISLEM / GRUPTA BILDIRIM
-# =========================================================
-
-def grup_ayari_oku():
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT grup_id, sabit_mesaj_id FROM operasyon_grup_ayari WHERE id=1")
-            return cur.fetchone()
-
-
-def grup_ayari_kaydet(grup_id, mesaj_id=None):
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""INSERT INTO operasyon_grup_ayari (id,grup_id,sabit_mesaj_id)
-                VALUES (1,%s,%s) ON CONFLICT (id) DO UPDATE SET
-                grup_id=EXCLUDED.grup_id, sabit_mesaj_id=EXCLUDED.sabit_mesaj_id""",
-                (grup_id, mesaj_id))
-        conn.commit()
-
-
-def guvenli_metin(metin):
-    # Siparis aciklamasinda bulunan telefonlari grup bildiriminden cikar.
-    metin = re.sub(r"(?<!\d)(?:\+?90[\s.-]?)?0?5\d{2}[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}(?!\d)", "[telefon gizlendi]", str(metin or ""))
-    metin = re.sub(r"(?i)\bTR[\s-]?(?:\d[\s-]?){24}\b", "[IBAN gizlendi]", metin)
-    return metin[:1500]
-
-
-def acik_liste_parcalari():
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id,siparis_metni,COALESCE(acil,FALSE) FROM siparisler WHERE durum='ACIK' ORDER BY COALESCE(acil,FALSE) DESC,id ASC")
-            rows=cur.fetchall()
-    baslik=f"📦 AÇIK İŞLER — {len(rows)} ADET\n\n"
-    parcalar=[]; metin=baslik
-    for sid, aciklama, acil in rows:
-        satir=f"{'🚨 ACİL ' if acil else ''}🆔 #{sid}\n📦 {guvenli_metin(aciklama)}\n────────────\n"
-        if len(metin)+len(satir)>3800:
-            parcalar.append(metin); metin="📦 AÇIK İŞLER (DEVAM)\n\n"
-        metin+=satir[:3700]
-    parcalar.append(metin if rows else "📦 AÇIK İŞLER\n\n✅ Bekleyen iş yok.")
-    return parcalar
-
-
-async def grup_listesini_yenile(context):
-    ayar=grup_ayari_oku()
-    if not ayar: return
-    grup_id, sabit_id=ayar
-    parcalar=acik_liste_parcalari()
-    # Sabit mesaj ilk sayfayi gosterir; cok uzun listeler ozel sohbetten gorulebilir.
-    metin=parcalar[0]
-    if len(parcalar)>1:
-        metin+="\n⚠️ Listenin devamı için botu özelden açın."
-    bot_adi=context.bot.username
-    menu=InlineKeyboardMarkup([[InlineKeyboardButton("🔒 İşlem Yap / Tüm Liste",url=f"https://t.me/{bot_adi}?start=operasyon")]])
-    try:
-        if sabit_id:
-            await context.bot.edit_message_text(chat_id=grup_id,message_id=sabit_id,text=metin,reply_markup=menu)
-            return
-    except Exception as exc:
-        if 'Message is not modified' in str(exc): return
-        logging.warning("Grup listesi duzenlenemedi: %s",exc)
-    try:
-        msg=await context.bot.send_message(grup_id,metin,reply_markup=menu)
-        grup_ayari_kaydet(grup_id,msg.message_id)
-        try: await context.bot.pin_chat_message(grup_id,msg.message_id,disable_notification=True)
-        except Exception: pass
-    except Exception as exc:
-        logging.exception("Grup acik is listesi gonderilemedi: %s",exc)
-
-
-async def grup_bildir(context, metin, liste_yenile=True):
-    ayar=grup_ayari_oku()
-    if not ayar: return
-    try:
-        await context.bot.send_message(ayar[0],metin[:4000])
-    except Exception as exc:
-        logging.exception("Grup bildirimi gonderilemedi: %s",exc)
-    if liste_yenile:
-        await grup_listesini_yenile(context)
-
-
-async def sohbet_guvenligi(update, context):
-    chat=update.effective_chat
-    if not chat: return
-    if chat.type in ('group','supergroup'):
-        # Grup komutlari ve butonlari sadece yonlendirme icindir.
-        if update.callback_query:
-            try: await update.callback_query.answer("İşlemi botun özel sohbetinden yapın.", show_alert=True)
-            except Exception: pass
-        raise ApplicationHandlerStop
-    if chat.type != 'private':
-        raise ApplicationHandlerStop
-    ayar=grup_ayari_oku()
-    if not ayar: return
-    try:
-        uye=await context.bot.get_chat_member(ayar[0],update.effective_user.id)
-        if uye.status not in ('member','administrator','creator'):
-            raise ValueError('not member')
-    except Exception:
-        if update.message:
-            await update.message.reply_text("🔒 Bu bot yalnızca operasyon grubu üyeleri içindir. Yöneticiye başvurun.")
-        elif update.callback_query:
-            await update.callback_query.answer("Bu bot yalnızca operasyon grubu üyeleri içindir.",show_alert=True)
-        raise ApplicationHandlerStop
-
-
-async def grup_kur(update,context):
-    if update.effective_chat.type not in ('group','supergroup'): return
-    uye=await context.bot.get_chat_member(update.effective_chat.id,update.effective_user.id)
-    if uye.status not in ('administrator','creator'):
-        await update.message.reply_text("Bu komutu grup yöneticisi kullanabilir.")
-        raise ApplicationHandlerStop
-    grup_ayari_kaydet(update.effective_chat.id)
-    await update.message.reply_text("✅ Operasyon grubu tanımlandı. İşlemler özelden, bildirimler burada olacak.")
-    await grup_listesini_yenile(context)
-    raise ApplicationHandlerStop
-
-
-async def grup_yonlendirme(update,context):
-    if update.effective_chat.type not in ('group','supergroup'): return
-    if not update.message or not update.message.text:
-        raise ApplicationHandlerStop
-    if not (update.message.text.startswith("/") or update.message.text in {"➕ Sipariş Ekle", "📦 Açık İşler", "📥 İş Al", "🚚 Alınan İşler", "🗑 Sipariş İptal", "🚨 Acil İş"}):
-        raise ApplicationHandlerStop
-    ad=context.bot.username
-    await update.message.reply_text("🔒 İşlemler özel sohbetten yapılır.\n📦 Açık işler gruptaki sabit mesajda görünür.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚚 Botu Özelden Aç",url=f"https://t.me/{ad}?start=operasyon")]]))
-    raise ApplicationHandlerStop
 
 
 # =========================================================
@@ -511,50 +375,11 @@ async def start(
 ):
     context.user_data.clear()
 
-    if update.effective_chat.type == "private" and context.args and context.args[0] == "ozeldeneme":
-        await update.message.reply_text(
-            "✅ Özel sohbet denemesi başarılı!\n\n"
-            "Bu mesajı yalnızca sen görüyorsun. "
-            "Şimdilik mevcut menüyle işlem yapabilirsin; "
-            "grup işleyişi henüz değiştirilmedi.",
-            reply_markup=ana_menu,
-        )
-        return
-
     await update.message.reply_text(
         "🚚 TAKIM YILDIZI OPERASYON\n\n"
         "Gündüz kargo operasyon sistemi\n\n"
         "Yapmak istediğiniz işlemi seçiniz:",
         reply_markup=ana_menu
-    )
-
-
-# =========================================================
-# OZEL SOHBET DENEMESI (MEVCUT IS AKISINI DEGISTIRMEZ)
-# =========================================================
-async def ozel_sohbet_deneme(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gruba dokunulmadan, tek tikla ozel sohbete gecis denemesi."""
-    if update.effective_chat.type == "private":
-        await update.message.reply_text(
-            "🔒 Özel sohbet bağlantısı çalışıyor.\n\n"
-            "Buradaki işlemleri yalnızca sen ve bot görürsünüz.\n"
-            "Mevcut işlemler için aşağıdaki menüyü kullanabilirsin.",
-            reply_markup=ana_menu,
-        )
-        return
-    bot_username = context.bot.username
-    if not bot_username:
-        await update.message.reply_text("Bot kullanıcı adı alınamadı; tekrar deneyin.")
-        return
-    url = f"https://t.me/{bot_username}?start=ozeldeneme"
-    await update.message.reply_text(
-        "🧪 ÖZEL SOHBET DENEMESİ\n\n"
-        "Aşağıdaki düğmeye basıp botu özelden açın. "
-        "İlk kullanımda Telegram 'Başlat' demenizi isteyebilir.\n\n"
-        "Bu yalnızca denemedir; mevcut grup işlemleri değişmedi.",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔒 İşleme Özelden Devam Et", url=url)
-        ]]),
     )
 
 
@@ -665,8 +490,6 @@ async def siparis_kaydet(
             siparis_id = cur.fetchone()[0]
 
         conn.commit()
-
-    await grup_bildir(context, f"📦 YENİ SİPARİŞ\n🆔 #{siparis_id}\n📦 {guvenli_metin(siparis_metni)}\n👤 Ekleyen: {kullanici_adi_getir(update)}")
 
     await update.message.reply_text(
         "✅ SİPARİŞ EKLENDİ\n\n"
@@ -853,7 +676,6 @@ async def acil_islem_yap(
             f"📦 {siparis_metni}"
         )
 
-    await grup_bildir(context, ("🚨 ACİL İŞ\n" if yeni_acil else "✅ ACİL KALDIRILDI\n") + f"🆔 #{siparis_id}\n📦 {guvenli_metin(siparis_metni)}\n👤 İşlemi Yapan: {kullanici_adi_getir(update)}")
     await update.message.reply_text(
         mesaj,
         reply_markup=ana_menu
@@ -1035,8 +857,6 @@ async def kargo_ucreti_al(
 
     siparis_metni = sonuc[0]
 
-    await grup_bildir(context, f"✅ İŞ ALINDI\n🆔 #{siparis_id}\n📦 {guvenli_metin(siparis_metni)}\n👤 İşi Alan: {personel}\n💰 {abs(kargo_ucreti):,.2f} ₺\n💳 {odeme_tipi}")
-
     await update.message.reply_text(
         "✅ İŞ ALINDI\n\n"
         f"🆔 #{siparis_id}\n"
@@ -1139,8 +959,6 @@ async def karsi_odeme_telefon_al(
         return ConversationHandler.END
 
     siparis_metni = sonuc[0]
-
-    await grup_bildir(context, f"📲 KARŞI ÖDEMELİ İŞ ALINDI\n🆔 #{siparis_id}\n📦 {guvenli_metin(siparis_metni)}\n👤 İşi Alan: {personel}\n💰 {tutar:,.2f} ₺\n💳 KARŞI ÖDEMELİ")
 
     await update.message.reply_text(
         "✅ İŞ ALINDI\n\n"
@@ -1305,7 +1123,6 @@ async def toplu_gonderiler_al(
         f"💰 Genel Toplam: {nakit_toplam + vadeli_toplam:,.2f} ₺"
     )
 
-    await grup_bildir(context, "📦 TOPLU İŞ ALINDI\n" + guvenli_metin(mesaj))
     context.user_data.clear()
 
     await update.message.reply_text(
@@ -1892,8 +1709,6 @@ async def siparis_iptal_onayla(
         return ConversationHandler.END
 
     siparis_metni = sonuc[0]
-
-    await grup_bildir(context, f"🗑 SİPARİŞ İPTAL EDİLDİ\n🆔 #{siparis_id}\n📦 {guvenli_metin(siparis_metni)}\n👤 İptal Eden: {iptal_eden}")
 
     await update.message.reply_text(
         "🗑 SİPARİŞ İPTAL EDİLDİ\n\n"
@@ -2943,18 +2758,9 @@ def main():
         fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
     )
 
-    application.add_handler(CommandHandler("grupkur", grup_kur, filters=filters.ChatType.GROUPS), group=-2)
-    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.ALL, sohbet_guvenligi), group=-1)
-    application.add_handler(CallbackQueryHandler(sohbet_guvenligi), group=-1)
-    application.add_handler(CommandHandler("grupkur", grup_yonlendirme, filters=filters.ChatType.GROUPS), group=-1)
-    application.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL & ~filters.COMMAND, grup_yonlendirme), group=-1)
-    application.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.COMMAND & ~filters.Regex(r"^/grupkur(?:@\w+)?(?:\s|$)"), grup_yonlendirme), group=-1)
-
     application.add_handler(
         CommandHandler("start", start)
     )
-
-    application.add_handler(CommandHandler("deneme", ozel_sohbet_deneme))
 
     application.add_handler(
         siparis_conversation
