@@ -1,5 +1,6 @@
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import psycopg
 from telegram import Update, ReplyKeyboardMarkup
@@ -26,6 +27,11 @@ WEBHOOK_URL = (
 
 PORT = int(os.environ.get("PORT", "10000"))
 
+TURKIYE_SAAT_DILIMI = ZoneInfo("Europe/Istanbul")
+
+def turkiye_saati():
+    return datetime.now(TURKIYE_SAAT_DILIMI).replace(tzinfo=None)
+
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL bulunamadi.")
 
@@ -51,7 +57,7 @@ def veritabani_hazirla():
                     siparis_metni TEXT NOT NULL,
                     durum TEXT NOT NULL DEFAULT 'ACIK',
                     eklenme_tarihi TIMESTAMP NOT NULL
-                        DEFAULT CURRENT_TIMESTAMP,
+                        DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul'),
                     alan_personel TEXT,
                     alinma_tarihi TIMESTAMP,
                     kargo_ucreti NUMERIC(15,2)
@@ -411,7 +417,7 @@ async def siparis_kaydet(
         )
         return SIPARIS_METNI
 
-    tarih = datetime.now()
+    tarih = turkiye_saati()
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -760,7 +766,7 @@ async def kargo_ucreti_al(
     siparis_id = context.user_data["siparis_id"]
 
     personel = kullanici_adi_getir(update)
-    alinma_tarihi = datetime.now()
+    alinma_tarihi = turkiye_saati()
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -864,7 +870,7 @@ async def karsi_odeme_telefon_al(
     siparis_id = context.user_data["siparis_id"]
     tutar = context.user_data["karsi_odeme_tutar"]
     personel = kullanici_adi_getir(update)
-    alinma_tarihi = datetime.now()
+    alinma_tarihi = turkiye_saati()
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -971,7 +977,7 @@ async def toplu_gonderiler_al(
 
     siparis_id = context.user_data["siparis_id"]
     personel = kullanici_adi_getir(update)
-    alinma_tarihi = datetime.now()
+    alinma_tarihi = turkiye_saati()
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -1292,7 +1298,7 @@ async def tahsilat_iban_sec(
         return ConversationHandler.END
 
     tahsil_eden = kullanici_adi_getir(update)
-    tahsilat_tarihi = datetime.now()
+    tahsilat_tarihi = turkiye_saati()
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -1617,7 +1623,7 @@ async def siparis_iptal_onayla(
 
     siparis_id = context.user_data["iptal_siparis_id"]
     iptal_eden = kullanici_adi_getir(update)
-    iptal_tarihi = datetime.now()
+    iptal_tarihi = turkiye_saati()
 
     with get_db() as conn:
         with conn.cursor() as cur:
