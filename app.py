@@ -146,9 +146,6 @@ def veritabani_hazirla():
                     tarih TIMESTAMP NOT NULL
                 )
             """)
-            cur.execute("ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS yola_cikan_id BIGINT")
-            cur.execute("ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS yola_cikan_adi TEXT")
-            cur.execute("ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS yola_cikis_tarihi TIMESTAMP")
         conn.commit()
 
 
@@ -181,8 +178,6 @@ DUZENLE_ID = 26
 DUZENLE_SECIM = 27
 DUZENLE_DEGER = 28
 DUZENLE_ONAY = 29
-YOLA_ID = 30
-YOLDAN_VAZGEC_ID = 31
 
 
 # =========================================================
@@ -193,7 +188,6 @@ ana_menu = ReplyKeyboardMarkup(
     [
         ["➕ Sipariş Ekle"],
         ["📦 Açık İşler", "📥 İş Al"],
-        ["🚗 Bu Adrese Gidiyorum", "↩️ Gitmekten Vazgeç"],
         ["🚚 Alınan İşler", "🗑 Sipariş İptal"],
         ["🚨 Acil İş"],
         ["✏️ Alınan İş Düzenle"],
@@ -507,8 +501,7 @@ async def acik_isler(
                 SELECT
                     id,
                     siparis_metni,
-                    COALESCE(acil, FALSE),
-                    yola_cikan_adi
+                    COALESCE(acil, FALSE)
                 FROM siparisler
                 WHERE durum = 'ACIK'
                 ORDER BY COALESCE(acil, FALSE) DESC, id ASC
@@ -527,22 +520,20 @@ async def acik_isler(
         f"📦 AÇIK İŞLER — {len(kayitlar)} ADET\n\n"
     )
 
-    for siparis_id, siparis_metni, acil, yoldaki in kayitlar:
+    for siparis_id, siparis_metni, acil in kayitlar:
         if acil:
             mesaj += (
                 "🚨🚨 ACİL — ÖNCELİKLİ ALIN 🚨🚨\n"
                 f"🆔 #{siparis_id}\n"
                 f"📦 {siparis_metni}\n"
-                f"🚗 Giden: {yoldaki}\n" if yoldaki else "⏳ Henüz kimse gitmiyor\n"
+                "────────────\n"
             )
-            mesaj += "────────────\n"
         else:
             mesaj += (
                 f"🆔 #{siparis_id}\n"
                 f"📦 {siparis_metni}\n"
-                f"🚗 Giden: {yoldaki}\n" if yoldaki else "⏳ Henüz kimse gitmiyor\n"
+                "────────────\n"
             )
-            mesaj += "────────────\n"
 
     await update.message.reply_text(
         mesaj,
@@ -2110,67 +2101,6 @@ async def duzenle_onay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-
-# BASIT ADRESE GIDIYORUM: yalnizca siparis ID uzerinden takip.
-async def yola_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("🚗 Gideceğiniz açık işin ID numarasını yazın.", reply_markup=islem_iptal_menu)
-    return YOLA_ID
-
-async def yola_isaretle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        sid = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("❌ Geçerli bir ID yazın.")
-        return YOLA_ID
-    uid = update.effective_user.id
-    ad = kullanici_adi_getir(update)
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""UPDATE siparisler SET yola_cikan_id=%s, yola_cikan_adi=%s,
-                        yola_cikis_tarihi=%s WHERE id=%s AND durum='ACIK'
-                        AND (yola_cikan_id IS NULL OR yola_cikan_id=%s)
-                        RETURNING siparis_metni""", (uid, ad, turkiye_saati(), sid, uid))
-            sonuc = cur.fetchone()
-            if not sonuc:
-                cur.execute("SELECT durum, yola_cikan_adi FROM siparisler WHERE id=%s", (sid,))
-                mevcut = cur.fetchone()
-        conn.commit()
-    if sonuc:
-        mesaj = f"🚗 ADRESE GİDİLİYOR\n🆔 #{sid}\n📦 {sonuc[0]}\n👤 Giden: {ad}"
-    elif mevcut and mevcut[0] == 'ACIK' and mevcut[1]:
-        mesaj = f"⛔ Bu işe zaten {mevcut[1]} gidiyor."
-    else:
-        mesaj = "❌ Açık sipariş bulunamadı."
-    await update.message.reply_text(mesaj, reply_markup=ana_menu)
-    context.user_data.clear()
-    return ConversationHandler.END
-
-async def yoldan_vazgec_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("↩️ Bırakacağınız işin ID numarasını yazın.", reply_markup=islem_iptal_menu)
-    return YOLDAN_VAZGEC_ID
-
-async def yoldan_vazgec(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        sid = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("❌ Geçerli bir ID yazın.")
-        return YOLDAN_VAZGEC_ID
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""UPDATE siparisler SET yola_cikan_id=NULL, yola_cikan_adi=NULL,
-                        yola_cikis_tarihi=NULL WHERE id=%s AND durum='ACIK'
-                        AND yola_cikan_id=%s RETURNING siparis_metni""",
-                        (sid, update.effective_user.id))
-            sonuc = cur.fetchone()
-        conn.commit()
-    mesaj = (f"↩️ ADRESE GİDİŞ İPTAL EDİLDİ\n🆔 #{sid}\n📦 {sonuc[0]}\nİş tekrar serbest."
-             if sonuc else "⚠️ Bu açık iş sizin üzerinizde değil veya bulunamadı.")
-    await update.message.reply_text(mesaj, reply_markup=ana_menu)
-    context.user_data.clear()
-    return ConversationHandler.END
-
 # =========================================================
 # GENEL IPTAL
 # =========================================================
@@ -2511,16 +2441,6 @@ def main():
     application.add_handler(
         acil_conversation
     )
-
-    for buton, baslat, durum, tamamla in [
-        ("🚗 Bu Adrese Gidiyorum", yola_baslat, YOLA_ID, yola_isaretle),
-        ("↩️ Gitmekten Vazgeç", yoldan_vazgec_baslat, YOLDAN_VAZGEC_ID, yoldan_vazgec),
-    ]:
-        application.add_handler(ConversationHandler(
-            entry_points=[MessageHandler(filters.Regex("^" + buton + "$"), baslat)],
-            states={durum: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), tamamla)]},
-            fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
-        ))
 
     application.add_handler(duzenle_conversation)
 
