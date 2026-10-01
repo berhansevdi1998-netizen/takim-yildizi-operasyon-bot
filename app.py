@@ -1,4 +1,6 @@
 import os
+import json
+from decimal import Decimal
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -132,9 +134,19 @@ def veritabani_hazirla():
                 )
             """)
 
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS operasyon_duzenleme_gecmisi (
+                    id BIGSERIAL PRIMARY KEY,
+                    siparis_id BIGINT NOT NULL,
+                    islem TEXT NOT NULL,
+                    eski_bilgi JSONB NOT NULL,
+                    yeni_bilgi JSONB NOT NULL,
+                    duzenleyen TEXT NOT NULL,
+                    duzenleyen_telegram_id BIGINT NOT NULL,
+                    tarih TIMESTAMP NOT NULL
+                )
+            """)
         conn.commit()
-
-
 
 
 veritabani_hazirla()
@@ -162,6 +174,10 @@ IPTAL_ID = 20
 IPTAL_ONAY = 21
 ACIL_ID = 24
 ACIL_ISLEM = 25
+DUZENLE_ID = 26
+DUZENLE_SECIM = 27
+DUZENLE_DEGER = 28
+DUZENLE_ONAY = 29
 
 
 # =========================================================
@@ -174,6 +190,7 @@ ana_menu = ReplyKeyboardMarkup(
         ["📦 Açık İşler", "📥 İş Al"],
         ["🚚 Alınan İşler", "🗑 Sipariş İptal"],
         ["🚨 Acil İş"],
+        ["✏️ Alınan İş Düzenle"],
         ["📲 Karşı Ödemeliler"],
         ["📜 Tahsil Edilen Karşı Ödemeler"],
         ["🏦 IBAN Bilgileri"],
@@ -251,6 +268,21 @@ tahsilat_iban_menu = ReplyKeyboardMarkup(
     resize_keyboard=True,
     one_time_keyboard=True
 )
+
+
+duzenle_menu = ReplyKeyboardMarkup([
+    ["📝 Sipariş Bilgisi", "💰 Kargo Ücreti"],
+    ["💵 Nakit", "📒 Vadeli / Cari"],
+    ["📲 Karşı Ödemeli", "📞 Telefon Düzelt"],
+    ["📦 Toplu Gönderileri Düzenle"],
+    ["↩️ Açık İşlere Geri Gönder"],
+    ["❌ İşlemden Vazgeç"],
+], resize_keyboard=True)
+
+duzenle_onay_menu = ReplyKeyboardMarkup([
+    ["✅ Değişikliği Kaydet"],
+    ["❌ İşlemden Vazgeç"],
+], resize_keyboard=True)
 
 
 # =========================================================
@@ -1811,6 +1843,265 @@ async def alinan_isler(
 
 
 # =========================================================
+# ALINAN IS DUZENLEME / DENETIM
+# =========================================================
+
+def duzenleme_ozeti(row):
+    return {
+        "siparis_metni": row[1], "durum": row[2],
+        "kargo_ucreti": str(row[3]) if row[3] is not None else None,
+        "odeme_tipi": row[4], "karsi_odeme_telefon": row[5],
+        "tahsilat_durumu": row[6], "alan_personel": row[7],
+        "alinma_tarihi": str(row[8]) if row[8] else None,
+    }
+
+
+def duzenleme_siparisi(cur, sid, kilitle=False):
+    cur.execute("""
+        SELECT id, siparis_metni, durum, kargo_ucreti, odeme_tipi,
+               karsi_odeme_telefon, tahsilat_durumu, alan_personel, alinma_tarihi
+        FROM siparisler WHERE id = %s
+    """ + (" FOR UPDATE" if kilitle else ""), (sid,))
+    return cur.fetchone()
+
+
+def toplu_altlar(cur, sid):
+    cur.execute("""SELECT id, sehir, kargo_ucreti, odeme_tipi
+                   FROM toplu_gonderiler WHERE siparis_id=%s ORDER BY id""", (sid,))
+    return cur.fetchall()
+
+
+def alt_ozet(rows):
+    return [{"id": r[0], "sehir": r[1], "tutar": str(r[2]), "tip": r[3]} for r in rows]
+
+
+async def duzenle_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text(
+        "✏️ ALINAN İŞ DÜZENLE\n\nDüzenlenecek alınmış siparişin ID numarasını yazınız.",
+        reply_markup=islem_iptal_menu)
+    return DUZENLE_ID
+
+
+async def duzenle_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        sid = int(update.message.text.strip())
+        if sid <= 0: raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ Geçerli bir sipariş ID yazınız.")
+        return DUZENLE_ID
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            row = duzenleme_siparisi(cur, sid)
+            altlar = toplu_altlar(cur, sid) if row and row[4] == "TOPLU" else []
+    if not row or row[2] != "ALINDI":
+        await update.message.reply_text("❌ Bu ID ile alınmış bir iş bulunamadı.", reply_markup=ana_menu)
+        return ConversationHandler.END
+    if row[6] == "TAHSİL EDİLDİ":
+        await update.message.reply_text("🔒 Bu sipariş tahsil edilmiş. Dekontlu kayıt muhasebe kontrolü olmadan değiştirilemez.", reply_markup=ana_menu)
+        return ConversationHandler.END
+    context.user_data["duzenle_id"] = sid
+    alt_metin = ""
+    if altlar:
+        alt_metin = "\n" + "\n".join(f"📍 {r[1]} — {abs(r[2]):,.2f} ₺ ({r[3]})" for r in altlar)
+    await update.message.reply_text(
+        f"✏️ İŞ #{sid}\n📦 {row[1]}\n💳 {row[4]}\n💰 {abs(row[3] or 0):,.2f} ₺"
+        f"\n📞 {row[5] or '-'}{alt_metin}\n\nNeyi değiştirmek istiyorsunuz?",
+        reply_markup=duzenle_menu)
+    return DUZENLE_SECIM
+
+
+async def duzenle_sec(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sec = update.message.text.strip()
+    tipler = {"💵 Nakit": "NAKİT", "📒 Vadeli / Cari": "VADELİ", "📲 Karşı Ödemeli": "KARŞI ÖDEMELİ"}
+    alanlar = {"📝 Sipariş Bilgisi": "metin", "💰 Kargo Ücreti": "tutar", "📞 Telefon Düzelt": "telefon", "📦 Toplu Gönderileri Düzenle": "toplu", "↩️ Açık İşlere Geri Gönder": "geri"}
+    sid = context.user_data.get("duzenle_id")
+    if not sid:
+        await update.message.reply_text("❌ İşlem süresi doldu. Yeniden başlayınız.", reply_markup=ana_menu)
+        return ConversationHandler.END
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            row = duzenleme_siparisi(cur, sid)
+    if not row or row[2] != "ALINDI" or row[6] == "TAHSİL EDİLDİ":
+        await update.message.reply_text("❌ Bu iş artık düzenlenemiyor.", reply_markup=ana_menu)
+        return ConversationHandler.END
+    if sec in tipler:
+        if row[4] == "TOPLU":
+            await update.message.reply_text("❌ Toplu gönderinin ödeme türleri alt kalemlerden düzenlenir.", reply_markup=duzenle_menu)
+            return DUZENLE_SECIM
+        context.user_data["duzenle_islem"] = "tip"
+        context.user_data["duzenle_yeni_tip"] = tipler[sec]
+        if tipler[sec] == "KARŞI ÖDEMELİ":
+            await update.message.reply_text("📞 Karşı ödemeli telefon numarasını yazınız.", reply_markup=islem_iptal_menu)
+            return DUZENLE_DEGER
+        await update.message.reply_text(f"💳 Yeni ödeme türü: {tipler[sec]}\n\nOnaylıyor musunuz?", reply_markup=duzenle_onay_menu)
+        return DUZENLE_ONAY
+    if sec not in alanlar:
+        await update.message.reply_text("Lütfen menüdeki seçeneklerden birini seçiniz.", reply_markup=duzenle_menu)
+        return DUZENLE_SECIM
+    islem = alanlar[sec]
+    if islem == "toplu" and row[4] != "TOPLU":
+        await update.message.reply_text("❌ Bu sipariş toplu gönderi değil.", reply_markup=duzenle_menu)
+        return DUZENLE_SECIM
+    if islem in {"tutar", "telefon"} and row[4] == "TOPLU":
+        await update.message.reply_text("❌ Toplu gönderide tutarları alt kalemlerden düzenleyiniz.", reply_markup=duzenle_menu)
+        return DUZENLE_SECIM
+    if islem == "telefon" and row[4] != "KARŞI ÖDEMELİ":
+        await update.message.reply_text("❌ Telefon düzeltme yalnızca karşı ödemeli işlerde kullanılır.", reply_markup=duzenle_menu)
+        return DUZENLE_SECIM
+    context.user_data["duzenle_islem"] = islem
+    if islem == "geri":
+        await update.message.reply_text("↩️ İş tekrar Açık İşler'e alınacak. Alınma bilgileri sıfırlanacak; değişiklik geçmişi saklanacak. Onaylıyor musunuz?", reply_markup=duzenle_onay_menu)
+        return DUZENLE_ONAY
+    sorular = {
+        "metin": "📝 Yeni sipariş açıklamasını yazınız.",
+        "tutar": "💰 Yeni kargo tutarını yazınız (pozitif rakam). Ödeme türü değişmeyecek.",
+        "telefon": "📞 Yeni telefon numarasını yazınız.",
+        "toplu": "📦 Düzeltilmiş toplu listeyi BAŞTAN alt alta yazınız.\nHer satır: şehir ve tutar.\nPozitif nakit, negatif vadeli.\nMevcut kalemler onaydan sonra yenileriyle değiştirilecek."
+    }
+    await update.message.reply_text(sorular[islem], reply_markup=islem_iptal_menu)
+    return DUZENLE_DEGER
+
+
+def telefon_gecerli(telefon):
+    rakam = "".join(c for c in telefon if c.isdigit())
+    return 10 <= len(rakam) <= 13
+
+
+async def duzenle_deger(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    islem = context.user_data.get("duzenle_islem")
+    deger = update.message.text.strip()
+    if not deger:
+        await update.message.reply_text("❌ Bilgi boş olamaz.")
+        return DUZENLE_DEGER
+    try:
+        if islem == "tip":
+            if not telefon_gecerli(deger): raise ValueError("Telefon 10-13 rakam olmalı.")
+            yeni = deger
+        elif islem == "telefon":
+            if not telefon_gecerli(deger): raise ValueError("Telefon 10-13 rakam olmalı.")
+            yeni = deger
+        elif islem == "tutar":
+            yeni = Decimal(str(abs(tutar_cevir(deger))))
+            if not yeni.is_finite(): raise ValueError("Geçersiz tutar")
+        elif islem == "metin":
+            yeni = deger
+        elif islem == "toplu":
+            yeni = []
+            for satir in deger.splitlines():
+                satir = satir.strip()
+                if not satir: continue
+                parcalar = satir.rsplit(maxsplit=1)
+                if len(parcalar) != 2 or not parcalar[0].strip(): raise ValueError("Her satırda şehir ve tutar yazınız.")
+                tutar = Decimal(str(tutar_cevir(parcalar[1])))
+                if not tutar.is_finite(): raise ValueError("Geçersiz tutar")
+                yeni.append((parcalar[0].strip(), str(tutar), "NAKİT" if tutar > 0 else "VADELİ"))
+            if not yeni: raise ValueError("En az bir gönderi olmalı.")
+        else:
+            raise ValueError("İşlem bulunamadı")
+    except (ValueError, ArithmeticError) as exc:
+        await update.message.reply_text(f"❌ Bilgi anlaşılamadı. {exc}\nTekrar yazınız.")
+        return DUZENLE_DEGER
+    context.user_data["duzenle_yeni"] = yeni
+    if islem == "toplu":
+        ozet = "\n".join(f"📍 {a}: {abs(Decimal(b)):,.2f} ₺ ({c})" for a,b,c in yeni)
+    elif islem == "tip":
+        ozet = f"📲 Karşı Ödemeli — Telefon: {yeni}"
+    else:
+        ozet = str(yeni)
+    await update.message.reply_text(f"✏️ YENİ BİLGİ\n{ozet}\n\nKaydedilsin mi?", reply_markup=duzenle_onay_menu)
+    return DUZENLE_ONAY
+
+
+async def duzenle_onay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text.strip() != "✅ Değişikliği Kaydet":
+        await update.message.reply_text("Lütfen onay butonuna basınız veya işlemi iptal ediniz.", reply_markup=duzenle_onay_menu)
+        return DUZENLE_ONAY
+    sid = context.user_data.get("duzenle_id")
+    islem = context.user_data.get("duzenle_islem")
+    yeni = context.user_data.get("duzenle_yeni")
+    yeni_tip = context.user_data.get("duzenle_yeni_tip")
+    if not sid or islem not in {"metin", "tutar", "telefon", "toplu", "tip", "geri"}:
+        await update.message.reply_text("❌ İşlem bilgileri eksik.", reply_markup=ana_menu)
+        return ConversationHandler.END
+    personel = kullanici_adi_getir(update)
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                row = duzenleme_siparisi(cur, sid, kilitle=True)
+                if not row or row[2] != "ALINDI" or row[6] == "TAHSİL EDİLDİ":
+                    await update.message.reply_text("🔒 İş artık düzenlenemiyor; başka bir işlem yapılmış olabilir.", reply_markup=ana_menu)
+                    return ConversationHandler.END
+                eski = duzenleme_ozeti(row)
+                if row[4] == "TOPLU":
+                    eski["alt_gonderiler"] = alt_ozet(toplu_altlar(cur, sid))
+                if islem == "metin":
+                    cur.execute("UPDATE siparisler SET siparis_metni=%s WHERE id=%s", (yeni, sid))
+                elif islem == "tutar":
+                    if row[4] == "TOPLU": raise ValueError("Toplu iş tutarı bu alandan değiştirilemez.")
+                    tutar = abs(Decimal(str(yeni)))
+                    if not tutar.is_finite() or tutar == 0: raise ValueError("Tutar geçersiz")
+                    tutar = -tutar if row[4] == "VADELİ" else tutar
+                    cur.execute("UPDATE siparisler SET kargo_ucreti=%s WHERE id=%s", (tutar, sid))
+                elif islem == "telefon":
+                    if row[4] != "KARŞI ÖDEMELİ" or not telefon_gecerli(str(yeni)): raise ValueError("Telefon değişikliği uygun değil.")
+                    cur.execute("UPDATE siparisler SET karsi_odeme_telefon=%s WHERE id=%s", (yeni, sid))
+                elif islem == "tip":
+                    if row[4] == "TOPLU" or yeni_tip not in {"NAKİT", "VADELİ", "KARŞI ÖDEMELİ"}: raise ValueError("Ödeme türü geçersiz")
+                    if yeni_tip == "KARŞI ÖDEMELİ" and (not yeni or not telefon_gecerli(str(yeni))): raise ValueError("Telefon gerekli")
+                    tutar = abs(row[3] or 0)
+                    if tutar == 0: raise ValueError("Tutar sıfır olamaz")
+                    tutar = -tutar if yeni_tip == "VADELİ" else tutar
+                    cur.execute("""UPDATE siparisler SET odeme_tipi=%s, kargo_ucreti=%s,
+                         karsi_odeme_telefon=%s, tahsilat_durumu=%s
+                         WHERE id=%s""", (yeni_tip, tutar,
+                         yeni if yeni_tip == "KARŞI ÖDEMELİ" else None,
+                         "BEKLİYOR" if yeni_tip == "KARŞI ÖDEMELİ" else None, sid))
+                elif islem == "toplu":
+                    if row[4] != "TOPLU" or not isinstance(yeni, list) or not yeni: raise ValueError("Toplu gönderi geçersiz")
+                    cur.execute("DELETE FROM toplu_gonderiler WHERE siparis_id=%s", (sid,))
+                    toplam = Decimal('0')
+                    for sehir, tutar_str, tip in yeni:
+                        tutar = Decimal(tutar_str)
+                        if not tutar.is_finite() or tutar == 0 or tip != ("NAKİT" if tutar > 0 else "VADELİ"):
+                            raise ValueError("Toplu gönderi tutarı geçersiz")
+                        toplam += tutar
+                        cur.execute("""INSERT INTO toplu_gonderiler
+                          (siparis_id, sehir, kargo_ucreti, odeme_tipi, eklenme_tarihi)
+                          VALUES (%s,%s,%s,%s,%s)""", (sid, sehir, tutar, tip, turkiye_saati()))
+                    cur.execute("UPDATE siparisler SET kargo_ucreti=%s WHERE id=%s", (toplam, sid))
+                elif islem == "geri":
+                    if row[4] == "TOPLU":
+                        cur.execute("DELETE FROM toplu_gonderiler WHERE siparis_id=%s", (sid,))
+                    cur.execute("""UPDATE siparisler SET durum='ACIK', alan_personel=NULL,
+                         alinma_tarihi=NULL, kargo_ucreti=NULL, odeme_tipi=NULL,
+                         karsi_odeme_telefon=NULL, tahsilat_durumu=NULL
+                         WHERE id=%s""", (sid,))
+                sonraki = duzenleme_siparisi(cur, sid)
+                yeni_ozet = duzenleme_ozeti(sonraki)
+                if row[4] == "TOPLU" or islem == "toplu":
+                    yeni_ozet["alt_gonderiler"] = alt_ozet(toplu_altlar(cur, sid))
+                cur.execute("""INSERT INTO operasyon_duzenleme_gecmisi
+                    (siparis_id, islem, eski_bilgi, yeni_bilgi, duzenleyen,
+                     duzenleyen_telegram_id, tarih)
+                    VALUES (%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s)""",
+                    (sid, islem, json.dumps(eski, ensure_ascii=False),
+                     json.dumps(yeni_ozet, ensure_ascii=False), personel,
+                     update.effective_user.id, turkiye_saati()))
+            conn.commit()
+    except (ValueError, ArithmeticError) as exc:
+        await update.message.reply_text(f"❌ İşlem yapılamadı: {exc}", reply_markup=ana_menu)
+        context.user_data.clear()
+        return ConversationHandler.END
+    context.user_data.clear()
+    await update.message.reply_text(
+        f"✅ İŞ #{sid} GÜNCELLENDİ\n👤 Düzenleyen: {personel}\n"
+        + ("↩️ İş yeniden Açık İşler'e alındı.\n" if islem == "geri" else "")
+        + "🕐 Değişiklik geçmişe kaydedildi.", reply_markup=ana_menu)
+    return ConversationHandler.END
+
+
+# =========================================================
 # GENEL IPTAL
 # =========================================================
 
@@ -2112,6 +2403,17 @@ def main():
         ],
     )
 
+    duzenle_conversation = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^✏️ Alınan İş Düzenle$"), duzenle_baslat)],
+        states={
+            DUZENLE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_id)],
+            DUZENLE_SECIM: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_sec)],
+            DUZENLE_DEGER: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_deger)],
+            DUZENLE_ONAY: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_onay)],
+        },
+        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
+    )
+
     application.add_handler(
         CommandHandler("start", start)
     )
@@ -2139,6 +2441,8 @@ def main():
     application.add_handler(
         acil_conversation
     )
+
+    application.add_handler(duzenle_conversation)
 
     application.add_handler(
         MessageHandler(
