@@ -375,11 +375,50 @@ async def start(
 ):
     context.user_data.clear()
 
+    if update.effective_chat.type == "private" and context.args and context.args[0] == "ozeldeneme":
+        await update.message.reply_text(
+            "✅ Özel sohbet denemesi başarılı!\n\n"
+            "Bu mesajı yalnızca sen görüyorsun. "
+            "Şimdilik mevcut menüyle işlem yapabilirsin; "
+            "grup işleyişi henüz değiştirilmedi.",
+            reply_markup=ana_menu,
+        )
+        return
+
     await update.message.reply_text(
         "🚚 TAKIM YILDIZI OPERASYON\n\n"
         "Gündüz kargo operasyon sistemi\n\n"
         "Yapmak istediğiniz işlemi seçiniz:",
         reply_markup=ana_menu
+    )
+
+
+# =========================================================
+# OZEL SOHBET DENEMESI (MEVCUT IS AKISINI DEGISTIRMEZ)
+# =========================================================
+async def ozel_sohbet_deneme(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gruba dokunulmadan, tek tikla ozel sohbete gecis denemesi."""
+    if update.effective_chat.type == "private":
+        await update.message.reply_text(
+            "🔒 Özel sohbet bağlantısı çalışıyor.\n\n"
+            "Buradaki işlemleri yalnızca sen ve bot görürsünüz.\n"
+            "Mevcut işlemler için aşağıdaki menüyü kullanabilirsin.",
+            reply_markup=ana_menu,
+        )
+        return
+    bot_username = context.bot.username
+    if not bot_username:
+        await update.message.reply_text("Bot kullanıcı adı alınamadı; tekrar deneyin.")
+        return
+    url = f"https://t.me/{bot_username}?start=ozeldeneme"
+    await update.message.reply_text(
+        "🧪 ÖZEL SOHBET DENEMESİ\n\n"
+        "Aşağıdaki düğmeye basıp botu özelden açın. "
+        "İlk kullanımda Telegram 'Başlat' demenizi isteyebilir.\n\n"
+        "Bu yalnızca denemedir; mevcut grup işlemleri değişmedi.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔒 İşleme Özelden Devam Et", url=url)
+        ]]),
     )
 
 
@@ -2761,6 +2800,8 @@ def main():
     application.add_handler(
         CommandHandler("start", start)
     )
+
+    application.add_handler(CommandHandler("deneme", ozel_sohbet_deneme))
 
     application.add_handler(
         siparis_conversation
