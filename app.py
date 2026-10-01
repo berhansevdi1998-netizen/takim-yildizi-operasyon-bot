@@ -2,6 +2,8 @@ import os
 import json
 import base64
 import io
+import re
+import logging
 from decimal import Decimal
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -10,6 +12,7 @@ import psycopg
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CommandHandler,
     MessageHandler,
     ConversationHandler,
@@ -149,9 +152,19 @@ def veritabani_hazirla():
                     tarih TIMESTAMP NOT NULL
                 )
             """)
+            cur.execute("""CREATE TABLE IF NOT EXISTS operasyon_grup_ayari (id INTEGER PRIMARY KEY, grup_id BIGINT NOT NULL, sabit_mesaj_id BIGINT)""")
             cur.execute("ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS yola_cikan_id BIGINT")
             cur.execute("ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS yola_cikan_adi TEXT")
             cur.execute("ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS yola_cikis_tarihi TIMESTAMP")
+            # Gunluk muhasebe: mevcut veriler korunur, sadece ek kolon ve tablo.
+            cur.execute("ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS alan_personel_telegram_id BIGINT")
+            cur.execute("ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS tahsil_eden_telegram_id BIGINT")
+            cur.execute("""CREATE TABLE IF NOT EXISTS muhasebe_personelleri (
+                telegram_id BIGINT PRIMARY KEY,
+                ad TEXT NOT NULL,
+                aktif BOOLEAN NOT NULL DEFAULT TRUE,
+                ilk_kayit TIMESTAMP NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Istanbul')
+            )""")
             cur.execute("""CREATE TABLE IF NOT EXISTS eglence_sesleri (
                 id BIGSERIAL PRIMARY KEY,
                 ad TEXT NOT NULL,
@@ -164,6 +177,150 @@ def veritabani_hazirla():
 
 
 veritabani_hazirla()
+
+
+
+# =========================================================
+# OPERASYON GRUBU: OZELDEN ISLEM / GRUPTA BILDIRIM
+# =========================================================
+
+def grup_ayari_oku():
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT grup_id, sabit_mesaj_id FROM operasyon_grup_ayari WHERE id=1")
+            return cur.fetchone()
+
+
+def grup_ayari_kaydet(grup_id, mesaj_id=None):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO operasyon_grup_ayari (id,grup_id,sabit_mesaj_id)
+                VALUES (1,%s,%s) ON CONFLICT (id) DO UPDATE SET
+                grup_id=EXCLUDED.grup_id, sabit_mesaj_id=EXCLUDED.sabit_mesaj_id""",
+                (grup_id, mesaj_id))
+        conn.commit()
+
+
+def guvenli_metin(metin):
+    # Siparis aciklamasinda bulunan telefonlari grup bildiriminden cikar.
+    metin = re.sub(r"(?<!\d)(?:\+?90[\s.-]?)?0?5\d{2}[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}(?!\d)", "[telefon gizlendi]", str(metin or ""))
+    metin = re.sub(r"(?i)\bTR[\s-]?(?:\d[\s-]?){24}\b", "[IBAN gizlendi]", metin)
+    return metin[:1500]
+
+
+def acik_liste_parcalari():
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id,siparis_metni,COALESCE(acil,FALSE) FROM siparisler WHERE durum='ACIK' ORDER BY COALESCE(acil,FALSE) DESC,id ASC")
+            rows=cur.fetchall()
+    baslik=f"📦 AÇIK İŞLER — {len(rows)} ADET\n\n"
+    parcalar=[]; metin=baslik
+    for sid, aciklama, acil in rows:
+        satir=f"{'🚨 ACİL ' if acil else ''}🆔 #{sid}\n📦 {guvenli_metin(aciklama)}\n────────────\n"
+        if len(metin)+len(satir)>3800:
+            parcalar.append(metin); metin="📦 AÇIK İŞLER (DEVAM)\n\n"
+        metin+=satir[:3700]
+    parcalar.append(metin if rows else "📦 AÇIK İŞLER\n\n✅ Bekleyen iş yok.")
+    return parcalar
+
+
+async def grup_listesini_yenile(context):
+    # Pasif personelin /start dahil tum islem erisimi kapali.
+    if update.effective_user and update.effective_user.id != MUHASEBE_YONETICI_ID:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT aktif FROM muhasebe_personelleri WHERE telegram_id=%s", (update.effective_user.id,))
+                kayit = cur.fetchone()
+        if kayit and not kayit[0]:
+            if update.message:
+                await update.message.reply_text("🔒 Hesabınız pasif. Yöneticiyle iletişime geçin.")
+            elif update.callback_query:
+                await update.callback_query.answer("Hesabınız pasif.", show_alert=True)
+            raise ApplicationHandlerStop
+    ayar=grup_ayari_oku()
+    if not ayar: return
+    grup_id, sabit_id=ayar
+    parcalar=acik_liste_parcalari()
+    # Sabit mesaj ilk sayfayi gosterir; cok uzun listeler ozel sohbetten gorulebilir.
+    metin=parcalar[0]
+    if len(parcalar)>1:
+        metin+="\n⚠️ Listenin devamı için botu özelden açın."
+    bot_adi=context.bot.username
+    menu=InlineKeyboardMarkup([[InlineKeyboardButton("🔒 İşlem Yap / Tüm Liste",url=f"https://t.me/{bot_adi}?start=operasyon")]])
+    try:
+        if sabit_id:
+            await context.bot.edit_message_text(chat_id=grup_id,message_id=sabit_id,text=metin,reply_markup=menu)
+            return
+    except Exception as exc:
+        if 'Message is not modified' in str(exc): return
+        logging.warning("Grup listesi duzenlenemedi: %s",exc)
+    try:
+        msg=await context.bot.send_message(grup_id,metin,reply_markup=menu)
+        grup_ayari_kaydet(grup_id,msg.message_id)
+        try: await context.bot.pin_chat_message(grup_id,msg.message_id,disable_notification=True)
+        except Exception: pass
+    except Exception as exc:
+        logging.exception("Grup acik is listesi gonderilemedi: %s",exc)
+
+
+async def grup_bildir(context, metin, liste_yenile=True):
+    ayar=grup_ayari_oku()
+    if not ayar: return
+    try:
+        await context.bot.send_message(ayar[0],metin[:4000])
+    except Exception as exc:
+        logging.exception("Grup bildirimi gonderilemedi: %s",exc)
+    if liste_yenile:
+        await grup_listesini_yenile(context)
+
+
+async def sohbet_guvenligi(update, context):
+    chat=update.effective_chat
+    if not chat: return
+    if chat.type in ('group','supergroup'):
+        # Grup komutlari ve butonlari sadece yonlendirme icindir.
+        if update.callback_query:
+            try: await update.callback_query.answer("İşlemi botun özel sohbetinden yapın.", show_alert=True)
+            except Exception: pass
+        raise ApplicationHandlerStop
+    if chat.type != 'private':
+        raise ApplicationHandlerStop
+    ayar=grup_ayari_oku()
+    if not ayar: return
+    try:
+        uye=await context.bot.get_chat_member(ayar[0],update.effective_user.id)
+        if uye.status not in ('member','administrator','creator'):
+            raise ValueError('not member')
+    except Exception:
+        if update.message:
+            await update.message.reply_text("🔒 Bu bot yalnızca operasyon grubu üyeleri içindir. Yöneticiye başvurun.")
+        elif update.callback_query:
+            await update.callback_query.answer("Bu bot yalnızca operasyon grubu üyeleri içindir.",show_alert=True)
+        raise ApplicationHandlerStop
+
+
+async def grup_kur(update,context):
+    if update.effective_chat.type not in ('group','supergroup'): return
+    uye=await context.bot.get_chat_member(update.effective_chat.id,update.effective_user.id)
+    if uye.status not in ('administrator','creator'):
+        await update.message.reply_text("Bu komutu grup yöneticisi kullanabilir.")
+        raise ApplicationHandlerStop
+    grup_ayari_kaydet(update.effective_chat.id)
+    await update.message.reply_text("✅ Operasyon grubu tanımlandı. İşlemler özelden, bildirimler burada olacak.")
+    await grup_listesini_yenile(context)
+    raise ApplicationHandlerStop
+
+
+async def grup_yonlendirme(update,context):
+    if update.effective_chat.type not in ('group','supergroup'): return
+    if not update.message or not update.message.text:
+        raise ApplicationHandlerStop
+    if not (update.message.text.startswith("/") or update.message.text in {"➕ Sipariş Ekle", "📦 Açık İşler", "📥 İş Al", "🚚 Alınan İşler", "🗑 Sipariş İptal", "🚨 Acil İş"}):
+        raise ApplicationHandlerStop
+    ad=context.bot.username
+    await update.message.reply_text("🔒 İşlemler özel sohbetten yapılır.\n📦 Açık işler gruptaki sabit mesajda görünür.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🚚 Botu Özelden Aç",url=f"https://t.me/{ad}?start=operasyon")]]))
+    raise ApplicationHandlerStop
 
 
 # =========================================================
@@ -210,6 +367,7 @@ ana_menu = ReplyKeyboardMarkup(
         ["📜 Tahsil Edilen Karşı Ödemeler"],
         ["🏦 IBAN Bilgileri"],
         ["😄 Canın Sıkılınca Bu Butona Bas"],
+        ["📊 Günlük Muhasebe"],
         ["❓ Nasıl Kullanılır?"],
     ],
     resize_keyboard=True
@@ -374,12 +532,53 @@ async def start(
     context: ContextTypes.DEFAULT_TYPE
 ):
     context.user_data.clear()
+    if update.effective_chat.type == "private" and update.effective_user:
+        personel_kaydet(update.effective_user)
+
+    if update.effective_chat.type == "private" and context.args and context.args[0] == "ozeldeneme":
+        await update.message.reply_text(
+            "✅ Özel sohbet denemesi başarılı!\n\n"
+            "Bu mesajı yalnızca sen görüyorsun. "
+            "Şimdilik mevcut menüyle işlem yapabilirsin; "
+            "grup işleyişi henüz değiştirilmedi.",
+            reply_markup=ana_menu,
+        )
+        return
 
     await update.message.reply_text(
         "🚚 TAKIM YILDIZI OPERASYON\n\n"
         "Gündüz kargo operasyon sistemi\n\n"
         "Yapmak istediğiniz işlemi seçiniz:",
         reply_markup=ana_menu
+    )
+
+
+# =========================================================
+# OZEL SOHBET DENEMESI (MEVCUT IS AKISINI DEGISTIRMEZ)
+# =========================================================
+async def ozel_sohbet_deneme(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Gruba dokunulmadan, tek tikla ozel sohbete gecis denemesi."""
+    if update.effective_chat.type == "private":
+        await update.message.reply_text(
+            "🔒 Özel sohbet bağlantısı çalışıyor.\n\n"
+            "Buradaki işlemleri yalnızca sen ve bot görürsünüz.\n"
+            "Mevcut işlemler için aşağıdaki menüyü kullanabilirsin.",
+            reply_markup=ana_menu,
+        )
+        return
+    bot_username = context.bot.username
+    if not bot_username:
+        await update.message.reply_text("Bot kullanıcı adı alınamadı; tekrar deneyin.")
+        return
+    url = f"https://t.me/{bot_username}?start=ozeldeneme"
+    await update.message.reply_text(
+        "🧪 ÖZEL SOHBET DENEMESİ\n\n"
+        "Aşağıdaki düğmeye basıp botu özelden açın. "
+        "İlk kullanımda Telegram 'Başlat' demenizi isteyebilir.\n\n"
+        "Bu yalnızca denemedir; mevcut grup işlemleri değişmedi.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔒 İşleme Özelden Devam Et", url=url)
+        ]]),
     )
 
 
@@ -490,6 +689,8 @@ async def siparis_kaydet(
             siparis_id = cur.fetchone()[0]
 
         conn.commit()
+
+    await grup_bildir(context, f"📦 YENİ SİPARİŞ\n🆔 #{siparis_id}\n📦 {guvenli_metin(siparis_metni)}\n👤 Ekleyen: {kullanici_adi_getir(update)}")
 
     await update.message.reply_text(
         "✅ SİPARİŞ EKLENDİ\n\n"
@@ -676,6 +877,7 @@ async def acil_islem_yap(
             f"📦 {siparis_metni}"
         )
 
+    await grup_bildir(context, ("🚨 ACİL İŞ\n" if yeni_acil else "✅ ACİL KALDIRILDI\n") + f"🆔 #{siparis_id}\n📦 {guvenli_metin(siparis_metni)}\n👤 İşlemi Yapan: {kullanici_adi_getir(update)}")
     await update.message.reply_text(
         mesaj,
         reply_markup=ana_menu
@@ -823,6 +1025,7 @@ async def kargo_ucreti_al(
                 SET
                     durum = 'ALINDI',
                     alan_personel = %s,
+                    alan_personel_telegram_id = %s,
                     alinma_tarihi = %s,
                     kargo_ucreti = %s,
                     odeme_tipi = %s
@@ -832,6 +1035,7 @@ async def kargo_ucreti_al(
                 """,
                 (
                     personel,
+                    update.effective_user.id,
                     alinma_tarihi,
                     kargo_ucreti,
                     odeme_tipi,
@@ -856,6 +1060,8 @@ async def kargo_ucreti_al(
         return ConversationHandler.END
 
     siparis_metni = sonuc[0]
+
+    await grup_bildir(context, f"✅ İŞ ALINDI\n🆔 #{siparis_id}\n📦 {guvenli_metin(siparis_metni)}\n👤 İşi Alan: {personel}\n💰 {abs(kargo_ucreti):,.2f} ₺\n💳 {odeme_tipi}")
 
     await update.message.reply_text(
         "✅ İŞ ALINDI\n\n"
@@ -927,6 +1133,7 @@ async def karsi_odeme_telefon_al(
                 SET
                     durum = 'ALINDI',
                     alan_personel = %s,
+                    alan_personel_telegram_id = %s,
                     alinma_tarihi = %s,
                     kargo_ucreti = %s,
                     odeme_tipi = 'KARŞI ÖDEMELİ',
@@ -938,6 +1145,7 @@ async def karsi_odeme_telefon_al(
                 """,
                 (
                     personel,
+                    update.effective_user.id,
                     alinma_tarihi,
                     tutar,
                     telefon,
@@ -959,6 +1167,8 @@ async def karsi_odeme_telefon_al(
         return ConversationHandler.END
 
     siparis_metni = sonuc[0]
+
+    await grup_bildir(context, f"📲 KARŞI ÖDEMELİ İŞ ALINDI\n🆔 #{siparis_id}\n📦 {guvenli_metin(siparis_metni)}\n👤 İşi Alan: {personel}\n💰 {tutar:,.2f} ₺\n💳 KARŞI ÖDEMELİ")
 
     await update.message.reply_text(
         "✅ İŞ ALINDI\n\n"
@@ -1034,6 +1244,7 @@ async def toplu_gonderiler_al(
                 SET
                     durum = 'ALINDI',
                     alan_personel = %s,
+                    alan_personel_telegram_id = %s,
                     alinma_tarihi = %s,
                     kargo_ucreti = %s,
                     odeme_tipi = %s
@@ -1043,6 +1254,7 @@ async def toplu_gonderiler_al(
                 """,
                 (
                     personel,
+                    update.effective_user.id,
                     alinma_tarihi,
                     sum(tutar for _, tutar, _ in gonderiler),
                     "TOPLU",
@@ -1123,6 +1335,7 @@ async def toplu_gonderiler_al(
         f"💰 Genel Toplam: {nakit_toplam + vadeli_toplam:,.2f} ₺"
     )
 
+    await grup_bildir(context, "📦 TOPLU İŞ ALINDI\n" + guvenli_metin(mesaj))
     context.user_data.clear()
 
     await update.message.reply_text(
@@ -1356,6 +1569,7 @@ async def tahsilat_iban_sec(
                     tahsilat_durumu = 'TAHSİL EDİLDİ',
                     tahsilat_tarihi = %s,
                     tahsil_eden = %s,
+                    tahsil_eden_telegram_id = %s,
                     dekont_file_id = %s,
                     dekont_tipi = %s,
                     tahsilat_iban = %s
@@ -1370,6 +1584,7 @@ async def tahsilat_iban_sec(
                 (
                     tahsilat_tarihi,
                     tahsil_eden,
+                    update.effective_user.id,
                     file_id,
                     dekont_tipi,
                     iban_sahibi,
@@ -1709,6 +1924,8 @@ async def siparis_iptal_onayla(
         return ConversationHandler.END
 
     siparis_metni = sonuc[0]
+
+    await grup_bildir(context, f"🗑 SİPARİŞ İPTAL EDİLDİ\n🆔 #{siparis_id}\n📦 {guvenli_metin(siparis_metni)}\n👤 İptal Eden: {iptal_eden}")
 
     await update.message.reply_text(
         "🗑 SİPARİŞ İPTAL EDİLDİ\n\n"
@@ -2248,7 +2465,7 @@ async def duzenle_onay(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if row[4] == "TOPLU":
                         cur.execute("DELETE FROM toplu_gonderiler WHERE siparis_id=%s", (sid,))
                     cur.execute("""UPDATE siparisler SET durum='ACIK', alan_personel=NULL,
-                         alinma_tarihi=NULL, kargo_ucreti=NULL, odeme_tipi=NULL,
+                         alan_personel_telegram_id=NULL, alinma_tarihi=NULL, kargo_ucreti=NULL, odeme_tipi=NULL,
                          karsi_odeme_telefon=NULL, tahsilat_durumu=NULL
                          WHERE id=%s""", (sid,))
                 sonraki = duzenleme_siparisi(cur, sid)
@@ -2515,6 +2732,229 @@ async def ses_dosyasi_al(update, context):
     return ConversationHandler.END
 
 
+# =========================================================
+# GUNLUK MUHASEBE (yalnizca ozel sohbet)
+# =========================================================
+MUHASEBE_YONETICI_ID = 8129950955
+# Muhasebeci kimligi daha sonra MUHASEBE_MUHASEBECI_ID env degiskeniyle eklenebilir.
+
+def muhasebe_yonetici_mi(user_id):
+    muhasebeci = os.environ.get("MUHASEBE_MUHASEBECI_ID", "").strip()
+    return user_id == MUHASEBE_YONETICI_ID or (muhasebeci.isdigit() and user_id == int(muhasebeci))
+
+
+def personel_kaydet(user):
+    if muhasebe_yonetici_mi(user.id):
+        return
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Pasif kayitlar ASLA /start ile aktif edilmez.
+            cur.execute("""INSERT INTO muhasebe_personelleri (telegram_id, ad)
+                VALUES (%s, %s) ON CONFLICT (telegram_id)
+                DO UPDATE SET ad=EXCLUDED.ad""", (user.id, user.full_name))
+        conn.commit()
+
+
+def para(tutar):
+    return f"{Decimal(str(tutar or 0)):,.2f} TL"
+
+
+def gun_verisi(gun):
+    bas = datetime.combine(gun, datetime.min.time())
+    bit = bas + timedelta(days=1)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id, alan_personel, alan_personel_telegram_id,
+                odeme_tipi, kargo_ucreti FROM siparisler
+                WHERE durum='ALINDI' AND alinma_tarihi >= %s AND alinma_tarihi < %s""", (bas, bit))
+            siparisler = cur.fetchall()
+            ids = [r[0] for r in siparisler if r[3] == 'TOPLU']
+            altlar = {}
+            if ids:
+                cur.execute("SELECT siparis_id, kargo_ucreti FROM toplu_gonderiler WHERE siparis_id = ANY(%s)", (ids,))
+                for sid, tutar in cur.fetchall():
+                    altlar.setdefault(sid, []).append(Decimal(str(tutar)))
+            cur.execute("""SELECT tahsil_eden, tahsil_eden_telegram_id, tahsilat_iban,
+                kargo_ucreti FROM siparisler
+                WHERE durum='ALINDI' AND odeme_tipi='KARŞI ÖDEMELİ'
+                AND tahsilat_durumu='TAHSİL EDİLDİ'
+                AND tahsilat_tarihi >= %s AND tahsilat_tarihi < %s""", (bas, bit))
+            tahsilatlar = cur.fetchall()
+            cur.execute("SELECT telegram_id, ad, aktif FROM muhasebe_personelleri ORDER BY ad")
+            personeller = cur.fetchall()
+    d = {'nakit':Decimal(0), 'vadeli':Decimal(0), 'karsi':Decimal(0),
+         'siparis':0, 'gonderi':0, 'iban':Decimal(0), 'ibanlar':{}, 'kisiler':{},
+         'eski':{}, 'belirsiz':0}
+    for uid, ad, aktif in personeller:
+        if aktif or gun < turkiye_saati().date():
+            d['kisiler'][uid] = {'ad':ad, 'siparis':0, 'gonderi':0, 'nakit':Decimal(0)}
+    for sid, ad, uid, tip, tutar in siparisler:
+        tutar = Decimal(str(tutar or 0))
+        kalemler = altlar.get(sid, []) if tip == 'TOPLU' else [tutar]
+        if tip == 'TOPLU' and not kalemler:
+            d['belirsiz'] += 1
+        d['siparis'] += 1
+        d['gonderi'] += len(kalemler)
+        nakit = Decimal(0)
+        for kalem in kalemler:
+            if tip == 'KARŞI ÖDEMELİ': d['karsi'] += abs(kalem)
+            elif tip == 'TOPLU':
+                if kalem > 0: d['nakit'] += kalem; nakit += kalem
+                elif kalem < 0: d['vadeli'] += abs(kalem)
+            elif tip == 'VADELİ' or kalem < 0: d['vadeli'] += abs(kalem)
+            else: d['nakit'] += abs(kalem); nakit += abs(kalem)
+        if uid is not None:
+            # Personel pasifse gunluk listede yok; gecmis kayitlari korunur.
+            if uid in d['kisiler']:
+                k = d['kisiler'][uid]
+                k['siparis'] += 1; k['gonderi'] += len(kalemler); k['nakit'] += nakit
+        else:
+            # Eski siparislerde Telegram ID yok; isimleri karistirmiyoruz.
+            key = ad or 'Bilinmeyen personel'
+            k = d['eski'].setdefault(key, {'siparis':0,'gonderi':0,'nakit':Decimal(0)})
+            k['siparis'] += 1; k['gonderi'] += len(kalemler); k['nakit'] += nakit
+    for ad, uid, iban, tutar in tahsilatlar:
+        tutar = abs(Decimal(str(tutar or 0)))
+        d['iban'] += tutar
+        ad_iban = iban or 'Belirtilmemiş'
+        d['ibanlar'][ad_iban] = d['ibanlar'].get(ad_iban, Decimal(0)) + tutar
+        # IBAN tahsilati nakit personel hesabina eklenmez.
+    return d
+
+
+def muhasebe_klavye(*satirlar):
+    return InlineKeyboardMarkup([[InlineKeyboardButton(yazi, callback_data=kod)] for yazi,kod in satir] for satir in satirlar)
+
+
+def yonetici_rapor(gun, d):
+    toplam = d['nakit'] + d['vadeli'] + d['karsi']
+    satirlar = [f"📊 TAKIM YILDIZI | {gun:%d.%m.%Y}",
+        f"💰 TOPLAM KARGO GELİRİ: {para(toplam)}", "",
+        f"💵 Nakit kargo: {para(d['nakit'])}",
+        f"📒 Vadeli/cari: {para(d['vadeli'])}",
+        f"📲 Karşı ödemeli: {para(d['karsi'])}", "",
+        "💳 BUGÜN TAHSİL EDİLENLER",
+        f"💵 Nakit (iş alımında): {para(d['nakit'])}",
+        f"🏦 IBAN: {para(d['iban'])}", "",
+        "🏦 IBAN DAĞILIMI"]
+    for ad in ('Esma','Hasan','Berhan','Cevdet Dayı'):
+        satirlar.append(f"• {ad}: {para(d['ibanlar'].get(ad,0))}")
+    for ad, tutar in d['ibanlar'].items():
+        if ad not in ('Esma','Hasan','Berhan','Cevdet Dayı'):
+            satirlar.append(f"• {ad}: {para(tutar)}")
+    satirlar.extend(['', f"📦 Sipariş: {d['siparis']} | Gönderi: {d['gonderi']}",
+        "", "👷 NAKİT PERSONEL DAĞILIMI"])
+    for k in d['kisiler'].values(): satirlar.append(f"• {k['ad']}: {para(k['nakit'])}")
+    for ad,k in d['eski'].items(): satirlar.append(f"• {ad} (eski kayıt): {para(k['nakit'])}")
+    if d['belirsiz']: satirlar.append(f"⚠️ {d['belirsiz']} toplu işin alt kalemleri bulunamadı.")
+    return '\n'.join(satirlar)
+
+
+async def muhasebe_ac(update, context):
+    if update.effective_chat.type != 'private':
+        await update.message.reply_text("🔒 Muhasebe yalnızca özel sohbetten görüntülenir.")
+        return
+    uid = update.effective_user.id
+    if muhasebe_yonetici_mi(uid):
+        await muhasebe_gun_goster(update.message, turkiye_saati().date())
+    else:
+        await update.message.reply_text("👷 Personel Muhasebesi", reply_markup=muhasebe_klavye(
+            [('📊 Bugünkü Hesabım','mh:ben')]))
+
+
+async def muhasebe_gun_goster(mesaj, gun):
+    d = gun_verisi(gun)
+    await mesaj.reply_text(yonetici_rapor(gun,d), reply_markup=muhasebe_klavye(
+        [('👥 Personel Raporları',f'mh:kisiler:{gun:%Y%m%d}')],
+        [('📅 Geçmiş Günler','mh:gecmis')],
+        [('⚙️ Personel Yönetimi','mh:yonetim')]))
+
+
+async def muhasebe_callback(update, context):
+    q = update.callback_query
+    if update.effective_chat.type != 'private':
+        await q.answer('Yalnızca özel sohbetten erişilebilir.', show_alert=True); return
+    await q.answer()
+    uid = update.effective_user.id
+    parca = q.data.split(':')
+    islem = parca[1]
+    if islem == 'ben':
+        d = gun_verisi(turkiye_saati().date())
+        k = d['kisiler'].get(uid, {'siparis':0,'gonderi':0,'nakit':Decimal(0)})
+        await q.message.reply_text(f"👷 BUGÜNKÜ HESABIM | {turkiye_saati():%d.%m.%Y}\n\n"
+            f"📦 Alınan sipariş: {k['siparis']}\n🚚 Gönderi: {k['gonderi']}\n"
+            f"💵 Nakit tahsilat: {para(k['nakit'])}")
+        return
+    if not muhasebe_yonetici_mi(uid):
+        await q.message.reply_text('🔒 Bu bölüme erişim yetkiniz yok.'); return
+    if islem == 'gun':
+        gun = datetime.strptime(parca[2], '%Y%m%d').date()
+        await muhasebe_gun_goster(q.message, gun)
+    elif islem == 'gecmis':
+        bugun = turkiye_saati().date()
+        satirlar = [[(f"📅 {(bugun-timedelta(days=i)):%d.%m.%Y}",f"mh:gun:{(bugun-timedelta(days=i)):%Y%m%d}")]
+                    for i in range(1,8)]
+        satirlar.append([('✍️ Tarih Yaz (GG.AA.YYYY)','mh:tarih')])
+        await q.message.reply_text('📅 Geçmiş Günler', reply_markup=muhasebe_klavye(*satirlar))
+    elif islem == 'tarih':
+        context.user_data['muhasebe_tarih_bekleniyor'] = True
+        await q.message.reply_text('📅 Görmek istediğiniz tarihi GG.AA.YYYY biçiminde yazın.')
+    elif islem == 'kisiler':
+        gun = datetime.strptime(parca[2], '%Y%m%d').date()
+        d = gun_verisi(gun)
+        satirlar = [f"👥 PERSONEL RAPORLARI | {gun:%d.%m.%Y}"]
+        for pid, k in d['kisiler'].items():
+            satirlar.append(f"• {k['ad']}: {k['siparis']} sipariş, {k['gonderi']} gönderi, {para(k['nakit'])}")
+        for ad,k in d['eski'].items():
+            satirlar.append(f"• {ad} (eski kayıt): {k['siparis']} sipariş, {k['gonderi']} gönderi, {para(k['nakit'])}")
+        butonlar = [[(k['ad'],f'mh:kisi:{parca[2]}:{pid}')] for pid,k in d['kisiler'].items()]
+        await q.message.reply_text('\n'.join(satirlar), reply_markup=muhasebe_klavye(*butonlar) if butonlar else None)
+    elif islem == 'kisi':
+        gun = datetime.strptime(parca[2], '%Y%m%d').date()
+        d = gun_verisi(gun)
+        k = d['kisiler'].get(int(parca[3]))
+        if k:
+            await q.message.reply_text(f"👷 {k['ad']} | {gun:%d.%m.%Y}\n"
+                f"📦 Sipariş: {k['siparis']}\n🚚 Gönderi: {k['gonderi']}\n💵 Nakit: {para(k['nakit'])}")
+    elif islem == 'yonetim':
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT telegram_id, ad, aktif FROM muhasebe_personelleri ORDER BY ad')
+                kisiler = cur.fetchall()
+        satirlar = [[(f"{'🟢' if aktif else '🔴'} {ad}",f'mh:durum:{pid}')]
+                    for pid,ad,aktif in kisiler]
+        await q.message.reply_text('⚙️ PERSONEL YÖNETİMİ\nPersonel seçerek durumunu değiştirebilirsiniz.',
+            reply_markup=muhasebe_klavye(*satirlar) if satirlar else None)
+    elif islem == 'durum':
+        pid = int(parca[2])
+        if muhasebe_yonetici_mi(pid):
+            await q.message.reply_text('Yönetici pasife alınamaz.'); return
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute('UPDATE muhasebe_personelleri SET aktif=NOT aktif WHERE telegram_id=%s RETURNING ad, aktif', (pid,))
+                sonuc = cur.fetchone()
+            conn.commit()
+        if sonuc:
+            await q.message.reply_text(f"{'🟢 AKTİF' if sonuc[1] else '🔴 PASİF'}: {sonuc[0]}")
+        else:
+            await q.message.reply_text('Personel bulunamadı.')
+
+
+async def muhasebe_tarih_mesaji(update, context):
+    if not context.user_data.get('muhasebe_tarih_bekleniyor'):
+        return
+    if not muhasebe_yonetici_mi(update.effective_user.id):
+        context.user_data.pop('muhasebe_tarih_bekleniyor',None); return
+    try:
+        gun = datetime.strptime(update.message.text.strip(), '%d.%m.%Y').date()
+        if gun > turkiye_saati().date(): raise ValueError('Gelecek tarih')
+    except ValueError:
+        await update.message.reply_text('❌ Tarih GG.AA.YYYY biçiminde olmalı. Tekrar yazın.'); raise ApplicationHandlerStop
+    context.user_data.pop('muhasebe_tarih_bekleniyor',None)
+    await muhasebe_gun_goster(update.message,gun)
+    raise ApplicationHandlerStop
+
+
 def main():
     application = (
         Application.builder()
@@ -2758,9 +3198,22 @@ def main():
         fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
     )
 
+    application.add_handler(CommandHandler("grupkur", grup_kur, filters=filters.ChatType.GROUPS), group=-2)
+    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.ALL, sohbet_guvenligi), group=-1)
+    application.add_handler(CallbackQueryHandler(sohbet_guvenligi), group=-1)
+    application.add_handler(CommandHandler("grupkur", grup_yonlendirme, filters=filters.ChatType.GROUPS), group=-1)
+    application.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.ALL & ~filters.COMMAND, grup_yonlendirme), group=-1)
+    application.add_handler(MessageHandler(filters.ChatType.GROUPS & filters.COMMAND & ~filters.Regex(r"^/grupkur(?:@\w+)?(?:\s|$)"), grup_yonlendirme), group=-1)
+
+    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.Regex(r'^\d{2}\.\d{2}\.\d{4}$'),
+        muhasebe_tarih_mesaji), group=0)
     application.add_handler(
         CommandHandler("start", start)
     )
+
+    application.add_handler(CommandHandler("deneme", ozel_sohbet_deneme))
+    application.add_handler(MessageHandler(filters.Regex('^📊 Günlük Muhasebe$'), muhasebe_ac))
+    application.add_handler(CallbackQueryHandler(muhasebe_callback, pattern=r'^mh:'))
 
     application.add_handler(
         siparis_conversation
