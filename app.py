@@ -1,7 +1,5 @@
 import os
 import json
-import re
-import unicodedata
 from decimal import Decimal
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -148,17 +146,6 @@ def veritabani_hazirla():
                     tarih TIMESTAMP NOT NULL
                 )
             """)
-            cur.execute("""CREATE TABLE IF NOT EXISTS musteri_adresleri (
-                id BIGSERIAL PRIMARY KEY, musteri_adi TEXT NOT NULL,
-                adres TEXT NOT NULL, adres_anahtari TEXT NOT NULL UNIQUE,
-                ekleyen TEXT, eklenme_tarihi TIMESTAMP NOT NULL
-            )""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS adres_gorevleri (
-                adres_id BIGINT PRIMARY KEY REFERENCES musteri_adresleri(id),
-                personel_id BIGINT NOT NULL, personel_adi TEXT NOT NULL,
-                baslama_tarihi TIMESTAMP NOT NULL
-            )""")
-            cur.execute("""ALTER TABLE siparisler ADD COLUMN IF NOT EXISTS adres_id BIGINT""")
         conn.commit()
 
 
@@ -191,15 +178,6 @@ DUZENLE_ID = 26
 DUZENLE_SECIM = 27
 DUZENLE_DEGER = 28
 DUZENLE_ONAY = 29
-ADRES_KAYIT_AD = 30
-ADRES_KAYIT_YER = 31
-ADRES_DUZENLE_ID = 32
-ADRES_DUZENLE_YER = 33
-SIPARIS_ADRES = 34
-ADRESE_GIT_ID = 35
-ADRESTEN_AYRIL_ID = 36
-ESKI_SIPARIS_ID = 37
-ESKI_SIPARIS_ADRES = 38
 
 
 # =========================================================
@@ -213,9 +191,6 @@ ana_menu = ReplyKeyboardMarkup(
         ["🚚 Alınan İşler", "🗑 Sipariş İptal"],
         ["🚨 Acil İş"],
         ["✏️ Alınan İş Düzenle"],
-        ["🏢 Adres Kaydet", "📝 Adres Düzenle"],
-        ["📍 Adresler", "🔗 Siparişe Adres Bağla"],
-        ["🚗 Adrese Gidiyorum", "✅ Adresten Ayrıldım"],
         ["📲 Karşı Ödemeliler"],
         ["📜 Tahsil Edilen Karşı Ödemeler"],
         ["🏦 IBAN Bilgileri"],
@@ -432,11 +407,6 @@ async def nasil_kullanilir(
         "⚠️ Bir işi almadan önce doğru ID numarasını "
         "seçtiğinizden emin olun.\n\n"
 
-        "🚗 ADRES TAKİBİ\n"
-        "Önce 🏢 Adres Kaydet, sonra siparişe kayıtlı adres seçin.\n"
-        "Yola çıkmadan 🚗 Adrese Gidiyorum ile adresi üzerinize alın.\n"
-        "Ayrılınca ✅ Adresten Ayrıldım ile serbest bırakın.\n"
-        "Eski açık işler için 🔗 Siparişe Adres Bağla kullanın.\n\n"
         "TAKIM YILDIZI LOJİSTİK 🚚"
     )
 
@@ -479,32 +449,6 @@ async def siparis_kaydet(
         )
         return SIPARIS_METNI
 
-    context.user_data["yeni_siparis_metni"] = siparis_metni
-    await update.message.reply_text(
-        "📍 Siparişin alınacağı kayıtlı adresin ID numarasını yazınız.\n"
-        "Kayıtlı adresleri görmek için 📍 Adresler butonunu kullanın.\n"
-        "Yeni adres gerekiyorsa önce bu işlemi iptal edip 🏢 Adres Kaydet bölümünden ekleyin.",
-        reply_markup=islem_iptal_menu)
-    return SIPARIS_ADRES
-
-
-async def siparis_adres_kaydet(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        adres_id = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("❌ Geçerli adres ID yazınız.")
-        return SIPARIS_ADRES
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT musteri_adi, adres FROM musteri_adresleri WHERE id=%s", (adres_id,))
-            adres = cur.fetchone()
-    if not adres:
-        await update.message.reply_text("❌ Adres bulunamadı. 📍 Adresler listesinden ID seçiniz.")
-        return SIPARIS_ADRES
-    siparis_metni = context.user_data.get("yeni_siparis_metni")
-    if not siparis_metni:
-        await update.message.reply_text("❌ İşlem bilgisi bulunamadı. Tekrar başlayınız.", reply_markup=ana_menu)
-        return ConversationHandler.END
     tarih = turkiye_saati()
 
     with get_db() as conn:
@@ -515,15 +459,15 @@ async def siparis_adres_kaydet(update: Update, context: ContextTypes.DEFAULT_TYP
                 (
                     siparis_metni,
                     durum,
-                    eklenme_tarihi, adres_id
+                    eklenme_tarihi
                 )
-                VALUES (%s, %s, %s, %s)
+                VALUES (%s, %s, %s)
                 RETURNING id
                 """,
                 (
                     siparis_metni,
                     "ACIK",
-                    tarih, adres_id
+                    tarih
                 )
             )
 
@@ -534,7 +478,7 @@ async def siparis_adres_kaydet(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(
         "✅ SİPARİŞ EKLENDİ\n\n"
         f"🆔 #{siparis_id}\n"
-        f"📦 {siparis_metni}\n📍 {adres[0]} — {adres[1]}",
+        f"📦 {siparis_metni}",
         reply_markup=ana_menu
     )
 
@@ -555,14 +499,12 @@ async def acik_isler(
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    s.id,
-                    s.siparis_metni,
-                    COALESCE(s.acil, FALSE), a.musteri_adi, a.adres, g.personel_adi
-                FROM siparisler s
-                LEFT JOIN musteri_adresleri a ON a.id=s.adres_id
-                LEFT JOIN adres_gorevleri g ON g.adres_id=s.adres_id
-                WHERE s.durum = 'ACIK'
-                ORDER BY COALESCE(s.acil, FALSE) DESC, s.id ASC
+                    id,
+                    siparis_metni,
+                    COALESCE(acil, FALSE)
+                FROM siparisler
+                WHERE durum = 'ACIK'
+                ORDER BY COALESCE(acil, FALSE) DESC, id ASC
             """)
 
             kayitlar = cur.fetchall()
@@ -578,24 +520,21 @@ async def acik_isler(
         f"📦 AÇIK İŞLER — {len(kayitlar)} ADET\n\n"
     )
 
-    for siparis_id, siparis_metni, acil, musteri, adres, giden in kayitlar:
-        adres_bilgisi = (f"📍 {musteri} — {adres}\n" if musteri else "⚠️ Adres eşleştirilmemiş\n")
-        gorev_bilgisi = (f"🚗 Adrese giden: {giden}\n" if giden else "🟢 Adres boşta\n")
+    for siparis_id, siparis_metni, acil in kayitlar:
         if acil:
             mesaj += (
                 "🚨🚨 ACİL — ÖNCELİKLİ ALIN 🚨🚨\n"
                 f"🆔 #{siparis_id}\n"
-                f"📦 {siparis_metni}\n" + adres_bilgisi + gorev_bilgisi +
+                f"📦 {siparis_metni}\n"
                 "────────────\n"
             )
         else:
             mesaj += (
                 f"🆔 #{siparis_id}\n"
-                f"📦 {siparis_metni}\n" + adres_bilgisi + gorev_bilgisi +
+                f"📦 {siparis_metni}\n"
                 "────────────\n"
             )
 
-    # Aynı adresteki tüm siparişler aynı görevli bilgisini gösterir.
     await update.message.reply_text(
         mesaj,
         reply_markup=ana_menu
@@ -2232,235 +2171,6 @@ async def iban_goster(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=iban_bilgileri_menu
     )
 
-
-# =========================================================
-# ADRES KAYITLARI VE PERSONEL GOREVLENDIRME
-# =========================================================
-
-def adres_anahtari(adres):
-    # Türkçe büyük/küçük harf, noktalama ve fazla boşluk farklarını azaltır.
-    adres = adres.strip().replace("İ", "i").replace("I", "ı").casefold()
-    adres = "".join(c for c in unicodedata.normalize("NFKD", adres) if not unicodedata.combining(c))
-    return re.sub(r"[^a-z0-9]+", "", adres)
-
-
-async def adres_liste(update, context):
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""SELECT a.id, a.musteri_adi, a.adres, g.personel_adi
-                FROM musteri_adresleri a LEFT JOIN adres_gorevleri g ON g.adres_id=a.id
-                ORDER BY a.id""")
-            rows = cur.fetchall()
-    if not rows:
-        await update.message.reply_text("📍 Henüz adres kaydı yok. 🏢 Adres Kaydet ile başlayın.", reply_markup=ana_menu)
-        return
-    msg = "📍 KAYITLI ADRESLER\n\n"
-    for aid, musteri, adres, personel in rows:
-        line = f"#{aid} — {musteri}\n📍 {adres}\n" + (f"🚗 {personel} gidiyor\n" if personel else "🟢 Boşta\n") + "────────\n"
-        if len(msg)+len(line)>3500:
-            await update.message.reply_text(msg)
-            msg=""
-        msg+=line
-    if msg: await update.message.reply_text(msg, reply_markup=ana_menu)
-
-
-async def adres_ekle_baslat(update, context):
-    context.user_data.clear()
-    await update.message.reply_text("🏢 Müşteri / firma adını yazınız.", reply_markup=islem_iptal_menu)
-    return ADRES_KAYIT_AD
-
-
-async def adres_ekle_ad(update, context):
-    ad=update.message.text.strip()
-    if len(ad)<2:
-        await update.message.reply_text("❌ Müşteri adını yazınız.")
-        return ADRES_KAYIT_AD
-    context.user_data['adres_musteri']=ad
-    await update.message.reply_text("📍 Açık adresi yazınız (OSB, sokak, bina/kapı gibi ayırt edici bilgilerle).", reply_markup=islem_iptal_menu)
-    return ADRES_KAYIT_YER
-
-
-async def adres_ekle_yer(update, context):
-    adres=update.message.text.strip()
-    if len(adres)<8:
-        await update.message.reply_text("❌ Adres çok kısa. Daha ayrıntılı yazınız.")
-        return ADRES_KAYIT_YER
-    anahtar=adres_anahtari(adres)
-    ad=context.user_data['adres_musteri']
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""INSERT INTO musteri_adresleri (musteri_adi,adres,adres_anahtari,ekleyen,eklenme_tarihi)
-                VALUES (%s,%s,%s,%s,%s) ON CONFLICT (adres_anahtari) DO NOTHING RETURNING id""",
-                (ad,adres,anahtar,kullanici_adi_getir(update),turkiye_saati()))
-            result=cur.fetchone()
-            if not result:
-                cur.execute("SELECT id,musteri_adi FROM musteri_adresleri WHERE adres_anahtari=%s",(anahtar,))
-                mevcut=cur.fetchone()
-    context.user_data.clear()
-    if result:
-        await update.message.reply_text(f"✅ Adres kaydedildi: #{result[0]}\n🏢 {ad}\n📍 {adres}", reply_markup=ana_menu)
-    else:
-        await update.message.reply_text(f"⚠️ Bu adres zaten kayıtlı: #{mevcut[0]} — {mevcut[1]}. Aynı adrese ikinci kayıt açılmadı.", reply_markup=ana_menu)
-    return ConversationHandler.END
-
-
-async def adres_duzenle_baslat(update, context):
-    context.user_data.clear()
-    await update.message.reply_text("📝 Düzenlenecek adresin ID numarasını yazınız.", reply_markup=islem_iptal_menu)
-    return ADRES_DUZENLE_ID
-
-
-async def adres_duzenle_id(update, context):
-    try: aid=int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("❌ Geçerli ID yazınız.")
-        return ADRES_DUZENLE_ID
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT musteri_adi,adres FROM musteri_adresleri WHERE id=%s",(aid,))
-            row=cur.fetchone()
-    if not row:
-        await update.message.reply_text("❌ Adres bulunamadı.")
-        return ADRES_DUZENLE_ID
-    context.user_data['adres_duzenle_id']=aid
-    await update.message.reply_text(f"Mevcut: {row[0]} — {row[1]}\n\nYeni bilgileri TEK SATIRDA 'Firma Adı | Açık Adres' şeklinde yazınız.",reply_markup=islem_iptal_menu)
-    return ADRES_DUZENLE_YER
-
-
-async def adres_duzenle_yer(update, context):
-    parts=[x.strip() for x in update.message.text.split('|',1)]
-    if len(parts)!=2 or len(parts[0])<2 or len(parts[1])<8:
-        await update.message.reply_text("❌ 'Firma Adı | Açık Adres' şeklinde yazınız.")
-        return ADRES_DUZENLE_YER
-    aid=context.user_data['adres_duzenle_id']
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id FROM musteri_adresleri WHERE adres_anahtari=%s AND id<>%s",(adres_anahtari(parts[1]),aid))
-            duplicate=cur.fetchone()
-            if not duplicate:
-                cur.execute("UPDATE musteri_adresleri SET musteri_adi=%s,adres=%s,adres_anahtari=%s WHERE id=%s",(parts[0],parts[1],adres_anahtari(parts[1]),aid))
-    if duplicate:
-        await update.message.reply_text(f"⛔ Bu adres zaten #{duplicate[0]} olarak kayıtlı. Çakışmayı önlemek için düzenleme yapılmadı.",reply_markup=ana_menu)
-    else:
-        await update.message.reply_text("✅ Adres güncellendi. Bu adrese bağlı tüm siparişler yeni adresi kullanır.",reply_markup=ana_menu)
-    context.user_data.clear()
-    return ConversationHandler.END
-
-
-async def adrese_git_baslat(update, context):
-    context.user_data.clear()
-    await update.message.reply_text("🚗 Gideceğiniz kayıtlı ADRESİN ID numarasını yazınız. 📍 Adresler listesinden bakabilirsiniz.",reply_markup=islem_iptal_menu)
-    return ADRESE_GIT_ID
-
-
-async def adrese_git_id(update, context):
-    try: aid=int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("❌ Geçerli adres ID yazınız.")
-        return ADRESE_GIT_ID
-    uid=update.effective_user.id
-    isim=kullanici_adi_getir(update)
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT musteri_adi,adres FROM musteri_adresleri WHERE id=%s",(aid,))
-            adres=cur.fetchone()
-            if not adres:
-                await update.message.reply_text("❌ Adres bulunamadı. 📍 Adresler listesini kontrol edin.")
-                return ADRESE_GIT_ID
-            # Veritabanı birincil anahtarı sayesinde iki personel aynı anda sahiplenemez.
-            cur.execute("""INSERT INTO adres_gorevleri (adres_id,personel_id,personel_adi,baslama_tarihi)
-                VALUES (%s,%s,%s,%s) ON CONFLICT (adres_id) DO NOTHING RETURNING personel_id""",
-                (aid,uid,isim,turkiye_saati()))
-            basarili=cur.fetchone()
-            if not basarili:
-                cur.execute("SELECT personel_id,personel_adi FROM adres_gorevleri WHERE adres_id=%s",(aid,))
-                sahibi=cur.fetchone()
-    context.user_data.clear()
-    if basarili:
-        await update.message.reply_text(f"🚗 ADRESE GİDİLİYOR\n📍 #{aid} — {adres[0]}\n{adres[1]}\n👤 Giden: {isim}\n⛔ Adres diğer personele kapatıldı.",reply_markup=ana_menu)
-    elif sahibi[0]==uid:
-        await update.message.reply_text(f"ℹ️ Bu adres zaten sizin üzerinizde: {adres[0]}.",reply_markup=ana_menu)
-    else:
-        await update.message.reply_text(f"⛔ BU ADRESE ZATEN GİDİLİYOR!\n📍 {adres[0]} — {adres[1]}\n🚗 Giden personel: {sahibi[1]}",reply_markup=ana_menu)
-    return ConversationHandler.END
-
-
-async def adresten_ayril_baslat(update, context):
-    context.user_data.clear()
-    await update.message.reply_text("✅ Ayrıldığınız adresin ID numarasını yazınız.",reply_markup=islem_iptal_menu)
-    return ADRESTEN_AYRIL_ID
-
-
-async def adresten_ayril_id(update, context):
-    try: aid=int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("❌ Geçerli adres ID yazınız.")
-        return ADRESTEN_AYRIL_ID
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""DELETE FROM adres_gorevleri WHERE adres_id=%s AND personel_id=%s
-                RETURNING personel_adi""",(aid,update.effective_user.id))
-            row=cur.fetchone()
-    context.user_data.clear()
-    if row:
-        await update.message.reply_text(f"✅ #{aid} numaralı adresten {row[0]} ayrıldı. Adres tekrar boşta.",reply_markup=ana_menu)
-    else:
-        await update.message.reply_text("⛔ Bu adres sizin üzerinizde değil. Yalnızca adrese giden personel serbest bırakabilir.",reply_markup=ana_menu)
-    return ConversationHandler.END
-
-
-async def adres_bagla_baslat(update, context):
-    context.user_data.clear()
-    await update.message.reply_text("🔗 Adresi eksik/eski siparişin ID numarasını yazınız.",reply_markup=islem_iptal_menu)
-    return ESKI_SIPARIS_ID
-
-
-async def adres_bagla_id(update, context):
-    try: sid=int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("❌ Geçerli sipariş ID yazınız.")
-        return ESKI_SIPARIS_ID
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT siparis_metni, durum FROM siparisler WHERE id=%s",(sid,))
-            row=cur.fetchone()
-    if not row or row[1]!='ACIK':
-        await update.message.reply_text("❌ Yalnızca açık siparişlere adres bağlanabilir.")
-        return ESKI_SIPARIS_ID
-    context.user_data['bagla_sid']=sid
-    await update.message.reply_text(f"📦 {row[0]}\n\n📍 Bağlanacak kayıtlı adres ID'sini yazınız.",reply_markup=islem_iptal_menu)
-    return ESKI_SIPARIS_ADRES
-
-
-async def adres_bagla_adres(update, context):
-    try: aid=int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("❌ Geçerli adres ID yazınız.")
-        return ESKI_SIPARIS_ADRES
-    sid=context.user_data['bagla_sid']
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT musteri_adi FROM musteri_adresleri WHERE id=%s",(aid,))
-            row=cur.fetchone()
-            if row:
-                cur.execute("UPDATE siparisler SET adres_id=%s WHERE id=%s AND durum='ACIK' RETURNING id",(aid,sid))
-                changed=cur.fetchone()
-            else: changed=None
-    context.user_data.clear()
-    if changed:
-        await update.message.reply_text(f"✅ Sipariş #{sid}, {row[0]} adresine bağlandı.",reply_markup=ana_menu)
-    else:
-        await update.message.reply_text("❌ Adres veya açık sipariş bulunamadı.",reply_markup=ana_menu)
-    return ConversationHandler.END
-
-
-def adres_konusma(buton, baslat, durumlar):
-    return ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex('^'+re.escape(buton)+'$'),baslat)],
-        states={key:[MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^❌ İşlemden Vazgeç$'), fn)] for key,fn in durumlar.items()},
-        fallbacks=[MessageHandler(filters.Regex('^❌ İşlemden Vazgeç$'),iptal),CommandHandler('iptal',iptal)]
-    )
-
 def main():
     application = (
         Application.builder()
@@ -2477,7 +2187,6 @@ def main():
         ],
 
         states={
-            SIPARIS_ADRES: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), siparis_adres_kaydet)],
             SIPARIS_METNI: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
@@ -2733,12 +2442,6 @@ def main():
         acil_conversation
     )
 
-    application.add_handler(adres_konusma("🏢 Adres Kaydet",adres_ekle_baslat,{ADRES_KAYIT_AD:adres_ekle_ad,ADRES_KAYIT_YER:adres_ekle_yer}))
-    application.add_handler(adres_konusma("📝 Adres Düzenle",adres_duzenle_baslat,{ADRES_DUZENLE_ID:adres_duzenle_id,ADRES_DUZENLE_YER:adres_duzenle_yer}))
-    application.add_handler(adres_konusma("🚗 Adrese Gidiyorum",adrese_git_baslat,{ADRESE_GIT_ID:adrese_git_id}))
-    application.add_handler(adres_konusma("✅ Adresten Ayrıldım",adresten_ayril_baslat,{ADRESTEN_AYRIL_ID:adresten_ayril_id}))
-    application.add_handler(adres_konusma("🔗 Siparişe Adres Bağla",adres_bagla_baslat,{ESKI_SIPARIS_ID:adres_bagla_id,ESKI_SIPARIS_ADRES:adres_bagla_adres}))
-    application.add_handler(MessageHandler(filters.Regex("^📍 Adresler$"),adres_liste))
     application.add_handler(duzenle_conversation)
 
     application.add_handler(
