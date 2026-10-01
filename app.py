@@ -2823,7 +2823,7 @@ def gun_verisi(gun):
 
 
 def muhasebe_klavye(*satirlar):
-    return InlineKeyboardMarkup([[InlineKeyboardButton(yazi, callback_data=kod)] for yazi,kod in satir] for satir in satirlar)
+    return InlineKeyboardMarkup([[InlineKeyboardButton(yazi, callback_data=kod) for yazi, kod in satir] for satir in satirlar])
 
 
 def yonetici_rapor(gun, d):
