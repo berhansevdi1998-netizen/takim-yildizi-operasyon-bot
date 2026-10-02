@@ -214,8 +214,6 @@ ana_menu = ReplyKeyboardMarkup(
         ["📲 Karşı Ödemeliler"],
         ["📜 Tahsil Edilen Karşı Ödemeler"],
         ["🏦 IBAN Bilgileri"],
-        ["😄 Canın Sıkılınca Bu Butona Bas"],
-        ["❓ Nasıl Kullanılır?"],
     ],
     resize_keyboard=True
 )
@@ -2859,17 +2857,6 @@ def main():
         fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
     ))
 
-    application.add_handler(ConversationHandler(
-        entry_points=[CommandHandler('sesekle', ses_ekle_baslat), CallbackQueryHandler(ses_ekle_buton, pattern='^eglence_ekle$')],
-        states={
-            SES_ADIM: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex('^❌ İşlemden Vazgeç$'), ses_adi_al)],
-            SES_DOSYA: [MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.Regex('^❌ İşlemden Vazgeç$'), ses_dosyasi_al)],
-        },
-        fallbacks=[MessageHandler(filters.Regex('^❌ İşlemden Vazgeç$'), iptal), CommandHandler('iptal', iptal)],
-    ))
-    application.add_handler(MessageHandler(filters.Regex('^😄 Canın Sıkılınca Bu Butona Bas$'), ses_menusu))
-    application.add_handler(CallbackQueryHandler(ses_secimi, pattern='^eglence_ses:[0-9]+$'))
-
     application.add_handler(
         MessageHandler(
             filters.Regex("^📦 Açık İşler$"),
@@ -2881,13 +2868,6 @@ def main():
         MessageHandler(
             filters.Regex("^🚚 Alınan İşler$"),
             alinan_isler
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.Regex("^❓ Nasıl Kullanılır\\?$"),
-            nasil_kullanilir
         )
     )
 
