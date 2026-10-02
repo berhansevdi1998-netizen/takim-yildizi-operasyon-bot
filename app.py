@@ -2035,7 +2035,7 @@ async def alinan_isler(
                 WHERE durum = 'ALINDI'
                   AND alinma_tarihi >= %s
                   AND alinma_tarihi < %s
-                ORDER BY alinma_tarihi DESC
+                ORDER BY alinma_tarihi ASC, id ASC
                 LIMIT 50
             """, (bugun, yarin))
 
