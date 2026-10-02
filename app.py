@@ -190,6 +190,9 @@ TAHSILAT_GECMIS_ID = 23
 
 IPTAL_ID = 20
 IPTAL_ONAY = 21
+BEKLEYEN_SECIM = 110
+BEKLEYEN_YENI_METIN = 111
+BEKLEYEN_DUZENLE_ONAY = 112
 ACIL_ID = 24
 ACIL_ISLEM = 25
 DUZENLE_ID = 26
@@ -208,7 +211,7 @@ ana_menu = ReplyKeyboardMarkup(
         ["📦 Açık İşler", "📥 İş Al"],
         ["🚚 Alınan İşler", "📍 Sipariş Konumu Ekle"],
         ["🚨 Acil İş", "🔎 Şehre Göre Ara"],
-        ["✏️ Alınan İş Düzenle", "🗑 Sipariş İptal"],
+        ["✏️ Alınan İş Düzenle", "✏️ Bekleyen İş Düzenle"],
         ["📲 Bekleyen Karşı Ödemeler"],
         ["📜 Tahsil Edilen Karşı Ödemeler"],
         ["🏦 IBAN Bilgileri"],
@@ -217,6 +220,17 @@ ana_menu = ReplyKeyboardMarkup(
 )
 
 
+
+bekleyen_islem_menu = ReplyKeyboardMarkup(
+    [["📝 Sipariş Bilgisini Düzenle"], ["🗑️ Bekleyen İşi İptal Et"],
+     ["❌ İşlemden Vazgeç"]],
+    resize_keyboard=True, one_time_keyboard=True
+)
+
+bekleyen_kaydet_menu = ReplyKeyboardMarkup(
+    [["✅ Değişikliği Kaydet"], ["❌ İşlemden Vazgeç"]],
+    resize_keyboard=True, one_time_keyboard=True
+)
 
 iptal_onay_menu = ReplyKeyboardMarkup(
     [
@@ -1640,9 +1654,9 @@ async def siparis_iptal_baslat(
     context.user_data.clear()
 
     await update.message.reply_text(
-        "🗑 SİPARİŞ İPTAL\n\n"
-        "İptal edilecek açık siparişin 🆔 "
-        "numarasını yazınız.\n\n"
+        "✏️ BEKLEYEN İŞ DÜZENLE\n\n"
+        "Düzenlemek veya iptal etmek istediğiniz açık siparişin "
+        "🆔 numarasını yazınız."
         
     )
 
@@ -1682,14 +1696,99 @@ async def siparis_iptal_id_al(
     _, siparis_metni, _ = siparis
 
     await update.message.reply_text(
-        "⚠️ İPTAL ONAYI\n\n"
+        "📦 BEKLEYEN SİPARİŞ\n\n"
         f"🆔 #{siparis_id}\n"
         f"📦 {siparis_metni}\n\n"
-        "Bu siparişi iptal etmek istediğinize emin misiniz?",
-        reply_markup=iptal_onay_menu
+        "Yapmak istediğiniz işlemi seçiniz:",
+        reply_markup=bekleyen_islem_menu
     )
 
-    return IPTAL_ONAY
+    return BEKLEYEN_SECIM
+
+
+async def bekleyen_islem_sec(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    secim = update.message.text.strip()
+    sid = context.user_data.get("iptal_siparis_id")
+    if not sid:
+        await update.message.reply_text("İşlem süresi doldu.", reply_markup=ana_menu)
+        return ConversationHandler.END
+    if secim == "🗑️ Bekleyen İşi İptal Et":
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT siparis_metni FROM siparisler WHERE id=%s AND durum='ACIK'", (sid,))
+                row = cur.fetchone()
+        if not row:
+            await update.message.reply_text("❌ Sipariş artık açık değil.", reply_markup=ana_menu)
+            context.user_data.clear()
+            return ConversationHandler.END
+        await update.message.reply_text(
+            f"⚠️ İPTAL ONAYI\\n\\n🆔 #{sid}\\n📦 {row[0]}\\n\\n"
+            "Bu bekleyen siparişi iptal etmek istediğinize emin misiniz?",
+            reply_markup=iptal_onay_menu)
+        return IPTAL_ONAY
+    if secim == "📝 Sipariş Bilgisini Düzenle":
+        await update.message.reply_text(
+            "📝 Siparişin yeni, eksiksiz metnini yazınız.\\n"
+            "Eski metnin yerine yazdığınız metin kaydedilecek.",
+            reply_markup=islem_iptal_menu)
+        return BEKLEYEN_YENI_METIN
+    await update.message.reply_text("Lütfen butonlardan seçim yapınız.", reply_markup=bekleyen_islem_menu)
+    return BEKLEYEN_SECIM
+
+
+async def bekleyen_yeni_metin_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    yeni = update.message.text.strip()
+    if not yeni:
+        await update.message.reply_text("❌ Sipariş bilgisi boş olamaz.")
+        return BEKLEYEN_YENI_METIN
+    sid = context.user_data.get("iptal_siparis_id")
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT siparis_metni FROM siparisler WHERE id=%s AND durum='ACIK'", (sid,))
+            row = cur.fetchone()
+    if not row:
+        await update.message.reply_text("❌ Sipariş artık açık değil.", reply_markup=ana_menu)
+        context.user_data.clear()
+        return ConversationHandler.END
+    context.user_data["bekleyen_yeni_metin"] = yeni
+    await update.message.reply_text(
+        f"📝 DEĞİŞİKLİK ONAYI\\n\\n🆔 #{sid}\\n\\n"
+        f"Eski bilgi:\\n{row[0]}\\n\\nYeni bilgi:\\n{yeni}\\n\\n"
+        "Değişikliği kaydetmek istiyor musunuz?",
+        reply_markup=bekleyen_kaydet_menu)
+    return BEKLEYEN_DUZENLE_ONAY
+
+
+async def bekleyen_duzenle_kaydet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text.strip() != "✅ Değişikliği Kaydet":
+        await update.message.reply_text("Lütfen onay butonunu kullanınız.", reply_markup=bekleyen_kaydet_menu)
+        return BEKLEYEN_DUZENLE_ONAY
+    sid = context.user_data.get("iptal_siparis_id")
+    yeni = context.user_data.get("bekleyen_yeni_metin")
+    if not sid or not yeni:
+        await update.message.reply_text("❌ İşlem bilgileri eksik.", reply_markup=ana_menu)
+        context.user_data.clear()
+        return ConversationHandler.END
+    personel = kullanici_adi_getir(update)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE siparisler SET siparis_metni=%s "
+                "WHERE id=%s AND durum='ACIK' RETURNING siparis_metni",
+                (yeni, sid))
+            sonuc = cur.fetchone()
+        conn.commit()
+    context.user_data.clear()
+    if not sonuc:
+        await update.message.reply_text(
+            "⚠️ Sipariş bu sırada alınmış veya iptal edilmiş. Değişiklik kaydedilmedi.",
+            reply_markup=ana_menu)
+    else:
+        await update.message.reply_text(
+            f"✅ BEKLEYEN İŞ DÜZENLENDİ\\n\\n🆔 #{sid}\\n"
+            f"📦 {sonuc[0]}\\n👤 Düzenleyen: {personel}",
+            reply_markup=ana_menu)
+    return ConversationHandler.END
 
 
 async def siparis_iptal_onayla(
@@ -2772,12 +2871,21 @@ def main():
     siparis_iptal_conversation = ConversationHandler(
         entry_points=[
             MessageHandler(
-                filters.Regex("^🗑 Sipariş İptal$"),
+                filters.Regex("^✏️ Bekleyen İş Düzenle$"),
                 siparis_iptal_baslat
             )
         ],
 
         states={
+            BEKLEYEN_SECIM: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bekleyen_islem_sec)
+            ],
+            BEKLEYEN_YENI_METIN: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bekleyen_yeni_metin_al)
+            ],
+            BEKLEYEN_DUZENLE_ONAY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, bekleyen_duzenle_kaydet)
+            ],
             IPTAL_ID: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
