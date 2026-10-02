@@ -472,7 +472,7 @@ async def siparis_kaydet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             siparis_id = cur.fetchone()[0]
         conn.commit()
     await update.message.reply_text(
-        f"✅ SİPARİŞ EKLENDİ\\n\\n🆔 #{siparis_id}\\n📦 {siparis_metni}",
+        f"✅ SİPARİŞ EKLENDİ\n\n🆔 #{siparis_id}\n📦 {siparis_metni}",
         reply_markup=ana_menu)
     context.user_data.clear()
     return ConversationHandler.END
@@ -503,7 +503,7 @@ async def konum_sonradan_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return KONUM_SIPARIS_ID
     context.user_data['konum_siparis_id'] = sid
     await update.message.reply_text(
-        f"📦 #{sid} — {kayit[0]}\\n\\n"
+        f"📦 #{sid} — {kayit[0]}\n\n"
         "WhatsApp'taki konumu Google Haritalar'da açıp bağlantısını buraya yapıştırın. "
         "Telegram konumu da gönderebilirsiniz.",
         reply_markup=islem_iptal_menu)
@@ -536,7 +536,7 @@ async def konum_sonradan_kaydet(update: Update, context: ContextTypes.DEFAULT_TY
     if not sonuc:
         await update.message.reply_text("❌ Sipariş artık açık değil. Konum eklenmedi.", reply_markup=ana_menu)
     else:
-        await update.message.reply_text(f"✅ #{sid} siparişine konum eklendi.\\n📍 {link}", reply_markup=ana_menu)
+        await update.message.reply_text(f"✅ #{sid} siparişine konum eklendi.\n📍 {link}", reply_markup=ana_menu)
     context.user_data.clear()
     return ConversationHandler.END
 
