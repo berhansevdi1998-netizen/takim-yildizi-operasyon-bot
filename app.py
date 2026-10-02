@@ -206,10 +206,10 @@ ana_menu = ReplyKeyboardMarkup(
     [
         ["➕ Sipariş Ekle"],
         ["📦 Açık İşler", "📥 İş Al"],
-        ["🚚 Alınan İşler", "📍 SİPARİŞ KONUMU EKLE"],
+        ["🚚 Alınan İşler", "📍 Sipariş Konumu Ekle"],
         ["🚨 Acil İş", "🔎 Şehre Göre Ara"],
         ["✏️ Alınan İş Düzenle", "🗑 Sipariş İptal"],
-        ["📲 BEKLEYEN KARŞI ÖDEMELER"],
+        ["📲 Bekleyen Karşı Ödemeler"],
         ["📜 Tahsil Edilen Karşı Ödemeler"],
         ["🏦 IBAN Bilgileri"],
     ],
@@ -2596,7 +2596,7 @@ def main():
     )
 
     konum_conversation = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^📍 SİPARİŞ KONUMU EKLE$"), konum_sonradan_baslat)],
+        entry_points=[MessageHandler(filters.Regex("^📍 Sipariş Konumu Ekle$"), konum_sonradan_baslat)],
         states={
             KONUM_SIPARIS_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), konum_sonradan_id)],
             KONUM_SIPARIS_GIR: [MessageHandler((filters.TEXT | filters.LOCATION) & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), konum_sonradan_kaydet)],
@@ -2669,7 +2669,7 @@ def main():
     tahsilat_conversation = ConversationHandler(
         entry_points=[
             MessageHandler(
-                filters.Regex("^📲 BEKLEYEN KARŞI ÖDEMELER$"),
+                filters.Regex("^📲 Bekleyen Karşı Ödemeler$"),
                 karsi_odemeliler_baslat
             )
         ],
