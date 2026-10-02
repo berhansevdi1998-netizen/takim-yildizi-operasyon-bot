@@ -2178,11 +2178,11 @@ async def duzenle_sec(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["duzenle_islem"] = islem
     if islem == "iptal":
         await update.message.reply_text(
-            "⚠️ ALINAN İŞ İPTALİ\\n\\n"
-            f"🆔 #{sid}\\n📦 {row[1]}\\n"
-            f"💰 İptal edilecek kargo ücreti: {abs(row[3] or 0):,.2f} ₺\\n\\n"
+            "⚠️ ALINAN İŞ İPTALİ\n\n"
+            f"🆔 #{sid}\n📦 {row[1]}\n"
+            f"💰 İptal edilecek kargo ücreti: {abs(row[3] or 0):,.2f} ₺\n\n"
             "Sipariş Alınan İşler listesinden çıkacak ve kargo ücreti "
-            "hesaplamalardan düşecek. İşlem geçmişi korunacak.\\n\\n"
+            "hesaplamalardan düşecek. İşlem geçmişi korunacak.\n\n"
             "İptali onaylıyor musunuz?",
             reply_markup=duzenle_onay_menu)
         return DUZENLE_ONAY
@@ -2342,8 +2342,11 @@ async def duzenle_onay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     context.user_data.clear()
     await update.message.reply_text(
-        f"✅ İŞ #{sid} GÜNCELLENDİ\n👤 Düzenleyen: {personel}\n"
+        (f"🗑️ İŞ #{sid} İPTAL EDİLDİ\n👤 İptal eden: {personel}\n"
+         if islem == "iptal" else
+         f"✅ İŞ #{sid} GÜNCELLENDİ\n👤 Düzenleyen: {personel}\n")
         + ("↩️ İş yeniden Açık İşler'e alındı.\n" if islem == "geri" else "")
+        + ("💰 Kargo ücreti iptal edildi.\n" if islem == "iptal" else "")
         + "🕐 Değişiklik geçmişe kaydedildi.", reply_markup=ana_menu)
     return ConversationHandler.END
 
