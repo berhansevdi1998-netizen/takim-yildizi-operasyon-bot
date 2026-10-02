@@ -217,7 +217,7 @@ ana_menu = ReplyKeyboardMarkup(
         ["🏦 IBAN Bilgileri"],
     ],
     resize_keyboard=True
-)
+, selective=True)
 
 
 
@@ -225,12 +225,12 @@ bekleyen_islem_menu = ReplyKeyboardMarkup(
     [["📝 Sipariş Bilgisini Düzenle"], ["🗑️ Bekleyen İşi İptal Et"],
      ["❌ İşlemden Vazgeç"]],
     resize_keyboard=True, one_time_keyboard=True
-)
+, selective=True)
 
 bekleyen_kaydet_menu = ReplyKeyboardMarkup(
     [["✅ Değişikliği Kaydet"], ["❌ İşlemden Vazgeç"]],
     resize_keyboard=True, one_time_keyboard=True
-)
+, selective=True)
 
 iptal_onay_menu = ReplyKeyboardMarkup(
     [
@@ -239,7 +239,7 @@ iptal_onay_menu = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
     one_time_keyboard=True
-)
+, selective=True)
 
 
 acil_islem_menu = ReplyKeyboardMarkup(
@@ -249,7 +249,7 @@ acil_islem_menu = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
     one_time_keyboard=True
-)
+, selective=True)
 
 
 islem_iptal_menu = ReplyKeyboardMarkup(
@@ -258,7 +258,7 @@ islem_iptal_menu = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
     one_time_keyboard=True
-)
+, selective=True)
 
 
 gonderi_tipi_menu = ReplyKeyboardMarkup(
@@ -268,7 +268,7 @@ gonderi_tipi_menu = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
     one_time_keyboard=True
-)
+, selective=True)
 
 
 tek_gonderi_odeme_menu = ReplyKeyboardMarkup(
@@ -277,7 +277,7 @@ tek_gonderi_odeme_menu = ReplyKeyboardMarkup(
         ["❌ İşlemden Vazgeç"],
     ],
     resize_keyboard=True
-)
+, selective=True)
 
 
 tahsilat_onay_menu = ReplyKeyboardMarkup(
@@ -287,7 +287,7 @@ tahsilat_onay_menu = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
     one_time_keyboard=True
-)
+, selective=True)
 
 
 tahsilat_iban_menu = ReplyKeyboardMarkup(
@@ -298,7 +298,7 @@ tahsilat_iban_menu = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
     one_time_keyboard=True
-)
+, selective=True)
 
 
 duzenle_menu = ReplyKeyboardMarkup([
@@ -309,13 +309,13 @@ duzenle_menu = ReplyKeyboardMarkup([
     ["↩️ Açık İşlere Geri Gönder"],
     ["🗑️ Alınan İşi İptal Et"],
     ["❌ İşlemden Vazgeç"],
-], resize_keyboard=True)
+], resize_keyboard=True, selective=True)
 
 duzenle_onay_menu = ReplyKeyboardMarkup([
     ["✅ Değişikliği Kaydet"],
     ["🗑️ İptali Onayla"],
     ["❌ İşlemden Vazgeç"],
-], resize_keyboard=True)
+], resize_keyboard=True, selective=True)
 
 
 # =========================================================
@@ -2484,7 +2484,7 @@ iban_bilgileri_menu = ReplyKeyboardMarkup(
         ["🏠 Ana Menü"],
     ],
     resize_keyboard=True
-)
+, selective=True)
 
 IBAN_BILGILERI = {
     "Berhan": ("Berhan Sevdi", "TR74 0015 7000 0000 0087 5837 72"),
@@ -2697,7 +2697,7 @@ def main():
         .build()
     )
 
-    siparis_conversation = ConversationHandler(
+    siparis_conversation = ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[
             MessageHandler(
                 filters.Regex("^➕ Sipariş Ekle$"),
@@ -2723,7 +2723,7 @@ def main():
         ],
     )
 
-    konum_conversation = ConversationHandler(
+    konum_conversation = ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[MessageHandler(filters.Regex("^📍 Sipariş Konumu Ekle$"), konum_sonradan_baslat)],
         states={
             KONUM_SIPARIS_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), konum_sonradan_id)],
@@ -2732,7 +2732,7 @@ def main():
         fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
     )
 
-    is_al_conversation = ConversationHandler(
+    is_al_conversation = ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[
             MessageHandler(
                 filters.Regex("^📥 İş Al$"),
@@ -2794,7 +2794,7 @@ def main():
         ],
     )
 
-    tahsilat_conversation = ConversationHandler(
+    tahsilat_conversation = ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[
             MessageHandler(
                 filters.Regex("^📲 Bekleyen Karşı Ödemeler$"),
@@ -2842,7 +2842,7 @@ def main():
         ],
     )
 
-    tahsilat_gecmis_conversation = ConversationHandler(
+    tahsilat_gecmis_conversation = ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[
             MessageHandler(
                 filters.Regex("^📜 Tahsil Edilen Karşı Ödemeler$"),
@@ -2868,7 +2868,7 @@ def main():
         ],
     )
 
-    siparis_iptal_conversation = ConversationHandler(
+    siparis_iptal_conversation = ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[
             MessageHandler(
                 filters.Regex("^✏️ Bekleyen İş Düzenle$"),
@@ -2910,7 +2910,7 @@ def main():
         ],
     )
 
-    acil_conversation = ConversationHandler(
+    acil_conversation = ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[
             MessageHandler(
                 filters.Regex("^🚨 Acil İş$"),
@@ -2940,7 +2940,7 @@ def main():
         ],
     )
 
-    duzenle_conversation = ConversationHandler(
+    duzenle_conversation = ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[MessageHandler(filters.Regex("^✏️ Alınan İş Düzenle$"), duzenle_baslat)],
         states={
             DUZENLE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_id)],
@@ -2982,7 +2982,7 @@ def main():
 
     application.add_handler(duzenle_conversation)
 
-    application.add_handler(ConversationHandler(
+    application.add_handler(ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[MessageHandler(filters.Regex("^🔎 Şehre Göre Ara$"), sehir_arama_baslat)],
         states={
             SEHIR_ARAMA: [
