@@ -173,8 +173,8 @@ veritabani_hazirla()
 # =========================================================
 
 SIPARIS_METNI = 1
-SIPARIS_KONUM_SECIM = 101
-SIPARIS_KONUM_GIR = 102
+KONUM_SIPARIS_ID = 101
+KONUM_SIPARIS_GIR = 102
 
 IS_ID = 10
 KARGO_UCRETI = 12
@@ -206,6 +206,7 @@ ana_menu = ReplyKeyboardMarkup(
     [
         ["➕ Sipariş Ekle"],
         ["📦 Açık İşler", "📥 İş Al"],
+        ["📍 Konum Ekle"],
         ["🚚 Alınan İşler", "🗑 Sipariş İptal"],
         ["🔎 Şehre Göre Ara"],
         ["🚨 Acil İş"],
@@ -462,30 +463,54 @@ async def siparis_kaydet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not siparis_metni:
         await update.message.reply_text("❌ Sipariş bilgisi boş olamaz.")
         return SIPARIS_METNI
-    context.user_data['yeni_siparis_metni'] = siparis_metni
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO siparisler (siparis_metni, durum, eklenme_tarihi)
+                VALUES (%s, %s, %s) RETURNING id
+            """, (siparis_metni, 'ACIK', turkiye_saati()))
+            siparis_id = cur.fetchone()[0]
+        conn.commit()
     await update.message.reply_text(
-        "Bu siparişin alınacağı konumu eklemek ister misiniz?",
-        reply_markup=ReplyKeyboardMarkup(
-            [["📍 Konum Ekle", "➡️ Konum Yok"], ["❌ İşlemden Vazgeç"]],
-            resize_keyboard=True))
-    return SIPARIS_KONUM_SECIM
+        f"✅ SİPARİŞ EKLENDİ\\n\\n🆔 #{siparis_id}\\n📦 {siparis_metni}",
+        reply_markup=ana_menu)
+    context.user_data.clear()
+    return ConversationHandler.END
 
 
-async def siparis_konum_sec(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    secim = update.message.text.strip()
-    if secim == "➡️ Konum Yok":
-        return await siparis_son_kayit(update, context, None)
-    if secim == "📍 Konum Ekle":
-        await update.message.reply_text(
-            "📍 WhatsApp'taki konumu haritada açıp bağlantısını buraya yapıştırın. "
-            "Telegram konumu olarak da gönderebilirsiniz.",
-            reply_markup=islem_iptal_menu)
-        return SIPARIS_KONUM_GIR
-    await update.message.reply_text("Lütfen butonlardan seçim yapınız.")
-    return SIPARIS_KONUM_SECIM
+async def konum_sonradan_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text(
+        "📍 Konum eklemek istediğiniz AÇIK siparişin ID numarasını yazın.",
+        reply_markup=islem_iptal_menu)
+    return KONUM_SIPARIS_ID
 
 
-async def siparis_konum_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def konum_sonradan_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        sid = int(update.message.text.strip().lstrip('#'))
+        if sid <= 0:
+            raise ValueError()
+    except ValueError:
+        await update.message.reply_text("❌ Geçerli bir sipariş ID numarası yazın.")
+        return KONUM_SIPARIS_ID
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT siparis_metni FROM siparisler WHERE id=%s AND durum='ACIK'", (sid,))
+            kayit = cur.fetchone()
+    if not kayit:
+        await update.message.reply_text("❌ Bu numarada açık sipariş bulunamadı.")
+        return KONUM_SIPARIS_ID
+    context.user_data['konum_siparis_id'] = sid
+    await update.message.reply_text(
+        f"📦 #{sid} — {kayit[0]}\\n\\n"
+        "WhatsApp'taki konumu Google Haritalar'da açıp bağlantısını buraya yapıştırın. "
+        "Telegram konumu da gönderebilirsiniz.",
+        reply_markup=islem_iptal_menu)
+    return KONUM_SIPARIS_GIR
+
+
+async def konum_sonradan_kaydet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from urllib.parse import urlparse
     loc = update.message.location
     if loc:
@@ -493,32 +518,25 @@ async def siparis_konum_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         link = (update.message.text or "").strip()
         parsed = urlparse(link)
-        if parsed.scheme != 'https' or not parsed.netloc or not (
-            parsed.netloc.lower() in ('maps.app.goo.gl', 'goo.gl', 'google.com', 'www.google.com', 'maps.google.com')
-            or parsed.netloc.lower().endswith('.google.com')
-        ):
-            await update.message.reply_text("❌ Geçerli bir Google Haritalar bağlantısı veya Telegram konumu gönderin.")
-            return SIPARIS_KONUM_GIR
-    return await siparis_son_kayit(update, context, link)
-
-
-async def siparis_son_kayit(update: Update, context: ContextTypes.DEFAULT_TYPE, konum_linki):
-    siparis_metni = context.user_data.get('yeni_siparis_metni')
-    if not siparis_metni:
-        await update.message.reply_text("İşlem süresi doldu. Yeniden sipariş ekleyin.", reply_markup=ana_menu)
+        host = (parsed.hostname or '').lower()
+        if parsed.scheme != 'https' or host not in (
+            'maps.app.goo.gl', 'goo.gl', 'google.com', 'www.google.com', 'maps.google.com'
+        ) and not host.endswith('.google.com'):
+            await update.message.reply_text("❌ Google Haritalar bağlantısı veya Telegram konumu gönderin.")
+            return KONUM_SIPARIS_GIR
+    sid = context.user_data.get('konum_siparis_id')
+    if not sid:
+        await update.message.reply_text("İşlem süresi doldu.", reply_markup=ana_menu)
         return ConversationHandler.END
     with get_db() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO siparisler (siparis_metni, durum, eklenme_tarihi, konum_linki)
-                VALUES (%s, %s, %s, %s) RETURNING id
-            """, (siparis_metni, 'ACIK', turkiye_saati(), konum_linki))
-            siparis_id = cur.fetchone()[0]
+            cur.execute("UPDATE siparisler SET konum_linki=%s WHERE id=%s AND durum='ACIK' RETURNING id", (link, sid))
+            sonuc = cur.fetchone()
         conn.commit()
-    await update.message.reply_text(
-        f"✅ SİPARİŞ EKLENDİ\n\n🆔 #{siparis_id}\n📦 {siparis_metni}"
-        + (f"\n📍 Konum: {konum_linki}" if konum_linki else ""),
-        reply_markup=ana_menu)
+    if not sonuc:
+        await update.message.reply_text("❌ Sipariş artık açık değil. Konum eklenmedi.", reply_markup=ana_menu)
+    else:
+        await update.message.reply_text(f"✅ #{sid} siparişine konum eklendi.\\n📍 {link}", reply_markup=ana_menu)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -2570,12 +2588,6 @@ def main():
                     siparis_kaydet
                 )
             ],
-            SIPARIS_KONUM_SECIM: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), siparis_konum_sec)
-            ],
-            SIPARIS_KONUM_GIR: [
-                MessageHandler((filters.TEXT | filters.LOCATION) & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), siparis_konum_al)
-            ],
         },
 
         fallbacks=[
@@ -2585,6 +2597,15 @@ def main():
             ),
             CommandHandler("iptal", iptal)
         ],
+    )
+
+    konum_conversation = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^📍 Konum Ekle$"), konum_sonradan_baslat)],
+        states={
+            KONUM_SIPARIS_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), konum_sonradan_id)],
+            KONUM_SIPARIS_GIR: [MessageHandler((filters.TEXT | filters.LOCATION) & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), konum_sonradan_kaydet)],
+        },
+        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
     )
 
     is_al_conversation = ConversationHandler(
@@ -2804,6 +2825,7 @@ def main():
     application.add_handler(
         siparis_conversation
     )
+    application.add_handler(konum_conversation)
 
     application.add_handler(
         is_al_conversation
