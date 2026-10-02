@@ -1870,6 +1870,9 @@ async def alinan_isler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+    bugun = turkiye_saati().date()
+    yarin = bugun + timedelta(days=1)
+
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -1884,9 +1887,11 @@ async def alinan_isler(
                     tahsilat_durumu
                 FROM siparisler
                 WHERE durum = 'ALINDI'
+                  AND alinma_tarihi >= %s
+                  AND alinma_tarihi < %s
                 ORDER BY alinma_tarihi DESC
                 LIMIT 50
-            """)
+            """, (bugun, yarin))
 
             kayitlar = cur.fetchall()
 
