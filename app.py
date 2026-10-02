@@ -293,11 +293,13 @@ duzenle_menu = ReplyKeyboardMarkup([
     ["📲 Karşı Ödemeli", "📞 Telefon Düzelt"],
     ["📦 Toplu Gönderileri Düzenle"],
     ["↩️ Açık İşlere Geri Gönder"],
+    ["🗑️ Alınan İşi İptal Et"],
     ["❌ İşlemden Vazgeç"],
 ], resize_keyboard=True)
 
 duzenle_onay_menu = ReplyKeyboardMarkup([
     ["✅ Değişikliği Kaydet"],
+    ["🗑️ İptali Onayla"],
     ["❌ İşlemden Vazgeç"],
 ], resize_keyboard=True)
 
@@ -1189,6 +1191,7 @@ async def karsi_odemeliler_baslat(
                     alinma_tarihi
                 FROM siparisler
                 WHERE odeme_tipi = 'KARŞI ÖDEMELİ'
+                  AND durum = 'ALINDI'
                   AND COALESCE(tahsilat_durumu, 'BEKLİYOR') = 'BEKLİYOR'
                 ORDER BY id ASC
                 """
@@ -1260,6 +1263,7 @@ async def tahsilat_id_al(
                 FROM siparisler
                 WHERE id = %s
                   AND odeme_tipi = 'KARŞI ÖDEMELİ'
+                  AND durum = 'ALINDI'
                   AND COALESCE(tahsilat_durumu, 'BEKLİYOR') = 'BEKLİYOR'
                 """,
                 (siparis_id,)
@@ -1398,6 +1402,7 @@ async def tahsilat_iban_sec(
                     tahsilat_iban = %s
                 WHERE id = %s
                   AND odeme_tipi = 'KARŞI ÖDEMELİ'
+                  AND durum = 'ALINDI'
                   AND COALESCE(tahsilat_durumu, 'BEKLİYOR') = 'BEKLİYOR'
                 RETURNING
                     siparis_metni,
@@ -2135,7 +2140,7 @@ async def duzenle_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def duzenle_sec(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sec = update.message.text.strip()
     tipler = {"💵 Nakit": "NAKİT", "📒 Vadeli / Cari": "VADELİ", "📲 Karşı Ödemeli": "KARŞI ÖDEMELİ"}
-    alanlar = {"📝 Sipariş Bilgisi": "metin", "💰 Kargo Ücreti": "tutar", "📞 Telefon Düzelt": "telefon", "📦 Toplu Gönderileri Düzenle": "toplu", "↩️ Açık İşlere Geri Gönder": "geri"}
+    alanlar = {"📝 Sipariş Bilgisi": "metin", "💰 Kargo Ücreti": "tutar", "📞 Telefon Düzelt": "telefon", "📦 Toplu Gönderileri Düzenle": "toplu", "↩️ Açık İşlere Geri Gönder": "geri", "🗑️ Alınan İşi İptal Et": "iptal"}
     sid = context.user_data.get("duzenle_id")
     if not sid:
         await update.message.reply_text("❌ İşlem süresi doldu. Yeniden başlayınız.", reply_markup=ana_menu)
@@ -2171,6 +2176,16 @@ async def duzenle_sec(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Telefon düzeltme yalnızca karşı ödemeli işlerde kullanılır.", reply_markup=duzenle_menu)
         return DUZENLE_SECIM
     context.user_data["duzenle_islem"] = islem
+    if islem == "iptal":
+        await update.message.reply_text(
+            "⚠️ ALINAN İŞ İPTALİ\\n\\n"
+            f"🆔 #{sid}\\n📦 {row[1]}\\n"
+            f"💰 İptal edilecek kargo ücreti: {abs(row[3] or 0):,.2f} ₺\\n\\n"
+            "Sipariş Alınan İşler listesinden çıkacak ve kargo ücreti "
+            "hesaplamalardan düşecek. İşlem geçmişi korunacak.\\n\\n"
+            "İptali onaylıyor musunuz?",
+            reply_markup=duzenle_onay_menu)
+        return DUZENLE_ONAY
     if islem == "geri":
         await update.message.reply_text("↩️ İş tekrar Açık İşler'e alınacak. Alınma bilgileri sıfırlanacak; değişiklik geçmişi saklanacak. Onaylıyor musunuz?", reply_markup=duzenle_onay_menu)
         return DUZENLE_ONAY
@@ -2235,14 +2250,16 @@ async def duzenle_deger(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def duzenle_onay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.strip() != "✅ Değişikliği Kaydet":
-        await update.message.reply_text("Lütfen onay butonuna basınız veya işlemi iptal ediniz.", reply_markup=duzenle_onay_menu)
-        return DUZENLE_ONAY
+    secim = update.message.text.strip()
     sid = context.user_data.get("duzenle_id")
     islem = context.user_data.get("duzenle_islem")
+    beklenen = "🗑️ İptali Onayla" if islem == "iptal" else "✅ Değişikliği Kaydet"
+    if secim != beklenen:
+        await update.message.reply_text("Lütfen doğru onay butonuna basınız veya işlemi iptal ediniz.", reply_markup=duzenle_onay_menu)
+        return DUZENLE_ONAY
     yeni = context.user_data.get("duzenle_yeni")
     yeni_tip = context.user_data.get("duzenle_yeni_tip")
-    if not sid or islem not in {"metin", "tutar", "telefon", "toplu", "tip", "geri"}:
+    if not sid or islem not in {"metin", "tutar", "telefon", "toplu", "tip", "geri", "iptal"}:
         await update.message.reply_text("❌ İşlem bilgileri eksik.", reply_markup=ana_menu)
         return ConversationHandler.END
     personel = kullanici_adi_getir(update)
@@ -2291,6 +2308,15 @@ async def duzenle_onay(update: Update, context: ContextTypes.DEFAULT_TYPE):
                           (siparis_id, sehir, kargo_ucreti, odeme_tipi, eklenme_tarihi)
                           VALUES (%s,%s,%s,%s,%s)""", (sid, sehir, tutar, tip, turkiye_saati()))
                     cur.execute("UPDATE siparisler SET kargo_ucreti=%s WHERE id=%s", (toplam, sid))
+                elif islem == "iptal":
+                    # Tahsil edilmiş karşı ödemeler üstteki kilit kontrolünden geçemez.
+                    # Alt gönderileri silmeyip iptal edilmiş siparişin geçmişinde koruyoruz.
+                    cur.execute("""UPDATE siparisler SET durum='IPTAL',
+                        iptal_tarihi=%s, iptal_eden=%s, kargo_ucreti=0,
+                        tahsilat_durumu=CASE WHEN odeme_tipi='KARŞI ÖDEMELİ'
+                            THEN 'IPTAL' ELSE tahsilat_durumu END
+                        WHERE id=%s AND durum='ALINDI'""",
+                        (turkiye_saati(), personel, sid))
                 elif islem == "geri":
                     if row[4] == "TOPLU":
                         cur.execute("DELETE FROM toplu_gonderiler WHERE siparis_id=%s", (sid,))
