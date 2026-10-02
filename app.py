@@ -1,3 +1,4 @@
+from datetime import timedelta
 import os
 import json
 import base64
@@ -1415,6 +1416,9 @@ async def tahsilat_gecmis_baslat(
 ):
     context.user_data.clear()
 
+    bugun = turkiye_saati().date()
+    yarin = bugun + timedelta(days=1)
+
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -1429,20 +1433,22 @@ async def tahsilat_gecmis_baslat(
                 FROM siparisler
                 WHERE odeme_tipi = 'KARŞI ÖDEMELİ'
                   AND tahsilat_durumu = 'TAHSİL EDİLDİ'
+                  AND tahsilat_tarihi >= %s
+                  AND tahsilat_tarihi < %s
                 ORDER BY tahsilat_tarihi DESC NULLS LAST, id DESC
                 LIMIT 50
-                """
+                """, (bugun, yarin)
             )
             kayitlar = cur.fetchall()
 
     if not kayitlar:
         await update.message.reply_text(
-            "📜 Henüz tahsil edilmiş karşı ödemeli kayıt bulunmuyor.",
+            "📜 Bugün tahsil edilmiş karşı ödemeli kayıt bulunmuyor.",
             reply_markup=ana_menu
         )
         return ConversationHandler.END
 
-    mesaj = "📜 TAHSİL EDİLEN KARŞI ÖDEMELER\n\n"
+    mesaj = f"📜 BUGÜN TAHSİL EDİLEN KARŞI ÖDEMELER ({bugun.strftime('%d.%m.%Y')})\n\n"
 
     for (
         siparis_id,
