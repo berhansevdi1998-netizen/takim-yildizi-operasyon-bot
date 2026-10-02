@@ -1722,13 +1722,13 @@ async def bekleyen_islem_sec(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data.clear()
             return ConversationHandler.END
         await update.message.reply_text(
-            f"⚠️ İPTAL ONAYI\\n\\n🆔 #{sid}\\n📦 {row[0]}\\n\\n"
+            f"⚠️ İPTAL ONAYI\n\n🆔 #{sid}\n📦 {row[0]}\n\n"
             "Bu bekleyen siparişi iptal etmek istediğinize emin misiniz?",
             reply_markup=iptal_onay_menu)
         return IPTAL_ONAY
     if secim == "📝 Sipariş Bilgisini Düzenle":
         await update.message.reply_text(
-            "📝 Siparişin yeni, eksiksiz metnini yazınız.\\n"
+            "📝 Siparişin yeni, eksiksiz metnini yazınız.\n"
             "Eski metnin yerine yazdığınız metin kaydedilecek.",
             reply_markup=islem_iptal_menu)
         return BEKLEYEN_YENI_METIN
@@ -1752,8 +1752,8 @@ async def bekleyen_yeni_metin_al(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
     context.user_data["bekleyen_yeni_metin"] = yeni
     await update.message.reply_text(
-        f"📝 DEĞİŞİKLİK ONAYI\\n\\n🆔 #{sid}\\n\\n"
-        f"Eski bilgi:\\n{row[0]}\\n\\nYeni bilgi:\\n{yeni}\\n\\n"
+        f"📝 DEĞİŞİKLİK ONAYI\n\n🆔 #{sid}\n\n"
+        f"Eski bilgi:\n{row[0]}\n\nYeni bilgi:\n{yeni}\n\n"
         "Değişikliği kaydetmek istiyor musunuz?",
         reply_markup=bekleyen_kaydet_menu)
     return BEKLEYEN_DUZENLE_ONAY
@@ -1785,8 +1785,8 @@ async def bekleyen_duzenle_kaydet(update: Update, context: ContextTypes.DEFAULT_
             reply_markup=ana_menu)
     else:
         await update.message.reply_text(
-            f"✅ BEKLEYEN İŞ DÜZENLENDİ\\n\\n🆔 #{sid}\\n"
-            f"📦 {sonuc[0]}\\n👤 Düzenleyen: {personel}",
+            f"✅ BEKLEYEN İŞ DÜZENLENDİ\n\n🆔 #{sid}\n"
+            f"📦 {sonuc[0]}\n👤 Düzenleyen: {personel}",
             reply_markup=ana_menu)
     return ConversationHandler.END
 
