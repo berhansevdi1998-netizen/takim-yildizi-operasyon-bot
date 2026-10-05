@@ -838,6 +838,13 @@ async def kargo_ucreti_al(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
+    # Takılı kalan İş Al akışında Açık İşler butonunu ücret sanma.
+    # Eski konuşmayı temizle, Açık İşler'i göster ve konuşmayı bitir.
+    if update.message.text.strip() == "📦 Açık İşler":
+        context.user_data.clear()
+        await acik_isler(update, context)
+        return ConversationHandler.END
+
     if update.message.text.strip() == "📲 Karşı Ödemeli":
         await update.message.reply_text(
             "📲 KARŞI ÖDEMELİ\n\n"
