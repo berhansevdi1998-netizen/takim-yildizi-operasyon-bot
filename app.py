@@ -2043,7 +2043,6 @@ async def alinan_isler(
                   AND alinma_tarihi >= %s
                   AND alinma_tarihi < %s
                 ORDER BY alinma_tarihi ASC, id ASC
-                LIMIT 50
             """, (bugun, yarin))
 
             kayitlar = cur.fetchall()
