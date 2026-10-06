@@ -178,6 +178,21 @@ def veritabani_hazirla():
                 INSERT INTO acil_ring (id, aktif) VALUES (1, FALSE)
                 ON CONFLICT (id) DO NOTHING
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS onemli_talimat (
+                    id INTEGER PRIMARY KEY,
+                    aktif BOOLEAN NOT NULL DEFAULT FALSE,
+                    chat_id BIGINT,
+                    mesaj TEXT,
+                    last_message_id BIGINT,
+                    baslatan TEXT,
+                    baslama_tarihi TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                INSERT INTO onemli_talimat (id, aktif) VALUES (1, FALSE)
+                ON CONFLICT (id) DO NOTHING
+            """)
         conn.commit()
 
 
@@ -216,6 +231,7 @@ DUZENLE_SECIM = 27
 DUZENLE_DEGER = 28
 DUZENLE_ONAY = 29
 ACIL_RING_MESAJ = 103
+ONEMLI_TALIMAT_MESAJ = 104
 
 
 # =========================================================
@@ -229,6 +245,7 @@ ana_menu = ReplyKeyboardMarkup(
         ["🚚 Alınan İşler", "📍 Sipariş Konumu Ekle"],
         ["🚨 Acil İş", "🔎 Şehre Göre Ara"],
         ["🚨 Acil Ring Başlat", "✅ Acil Ring Kapat"],
+        ["📢 Önemli Talimat", "✅ Talimat Tamamlandı"],
         ["✏️ Alınan İş Düzenle", "✏️ Bekleyen İş Düzenle"],
         ["📲 Bekleyen Karşı Ödemeler"],
         ["📜 Tahsil Edilen Karşı Ödemeler"],
@@ -2791,8 +2808,95 @@ async def acil_ring_dongusu(application):
         except Exception as exc:
             print(f"Acil Ring yenileme hatasi: {exc}")
 
+# =========================================================
+# ONEMLI TALIMAT - ACIL RINGDEN BAGIMSIZ, HER 1 DAKIKADA YENILER
+# =========================================================
+
+def onemli_talimat_metni(mesaj):
+    return (
+        "🚨🚨🚨 ÖNEMLİ TALİMAT 🚨🚨🚨\n\n"
+        "⚠️ TÜM PERSONELİN DİKKATİNE ⚠️\n\n"
+        + mesaj.strip() +
+        "\n\n❗ BU TALİMAT TAMAMLANANA KADAR HER 1 DAKİKADA YENİLENİR."
+    )
+
+async def onemli_talimat_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "📢 ÖNEMLİ TALİMAT\n\nPersonelin gözden kaçırmaması gereken talimatı yazınız.\n"
+        "Talimat tamamlanana kadar her 1 dakikada bir grubun en altına yenilenecek.",
+        reply_markup=islem_iptal_menu
+    )
+    return ONEMLI_TALIMAT_MESAJ
+
+async def onemli_talimat_mesaj_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mesaj = (update.message.text or "").strip()
+    if not mesaj:
+        await update.message.reply_text("❌ Talimat boş olamaz.")
+        return ONEMLI_TALIMAT_MESAJ
+    chat_id = update.effective_chat.id
+    baslatan = kullanici_adi_getir(update)
+    gonderilen = await context.bot.send_message(chat_id=chat_id, text=onemli_talimat_metni(mesaj))
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE onemli_talimat SET aktif=TRUE, chat_id=%s, mesaj=%s,
+                    last_message_id=%s, baslatan=%s, baslama_tarihi=%s
+                WHERE id=1
+            """, (chat_id, mesaj, gonderilen.message_id, baslatan, turkiye_saati()))
+        conn.commit()
+    await update.message.reply_text(
+        "✅ Önemli Talimat yayınlandı. Tamamlanana kadar her 1 dakikada bir en alta yenilenecek.",
+        reply_markup=ana_menu
+    )
+    return ConversationHandler.END
+
+async def onemli_talimat_kapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT aktif, chat_id, last_message_id FROM onemli_talimat WHERE id=1")
+            row = cur.fetchone()
+            cur.execute("UPDATE onemli_talimat SET aktif=FALSE, last_message_id=NULL WHERE id=1")
+        conn.commit()
+    if row and row[0] and row[1] and row[2]:
+        try:
+            await context.bot.delete_message(chat_id=row[1], message_id=row[2])
+        except Exception:
+            pass
+    await update.message.reply_text(
+        "✅ ÖNEMLİ TALİMAT TAMAMLANDI. Otomatik tekrar durduruldu.",
+        reply_markup=ana_menu
+    )
+
+async def onemli_talimat_dongusu(application):
+    while True:
+        await asyncio.sleep(60)
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT aktif, chat_id, mesaj, last_message_id FROM onemli_talimat WHERE id=1")
+                    row = cur.fetchone()
+            if not row or not row[0] or not row[1] or not row[2]:
+                continue
+            _, chat_id, mesaj, eski_id = row
+            if eski_id:
+                try:
+                    await application.bot.delete_message(chat_id=chat_id, message_id=eski_id)
+                except Exception:
+                    pass
+            yeni = await application.bot.send_message(chat_id=chat_id, text=onemli_talimat_metni(mesaj))
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE onemli_talimat SET last_message_id=%s WHERE id=1 AND aktif=TRUE",
+                        (yeni.message_id,)
+                    )
+                conn.commit()
+        except Exception as exc:
+            print(f"Onemli Talimat yenileme hatasi: {exc}")
+
 async def uygulama_baslarken(application):
     application.create_task(acil_ring_dongusu(application))
+    application.create_task(onemli_talimat_dongusu(application))
 
 
 def main():
@@ -3094,6 +3198,13 @@ def main():
         fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
     ))
     application.add_handler(MessageHandler(filters.Regex("^✅ Acil Ring Kapat$"), acil_ring_kapat))
+
+    application.add_handler(ConversationHandler(per_chat=True, per_user=True,
+        entry_points=[MessageHandler(filters.Regex("^📢 Önemli Talimat$"), onemli_talimat_baslat)],
+        states={ONEMLI_TALIMAT_MESAJ: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), onemli_talimat_mesaj_al)]},
+        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
+    ))
+    application.add_handler(MessageHandler(filters.Regex("^✅ Talimat Tamamlandı$"), onemli_talimat_kapat))
 
     application.add_handler(ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[MessageHandler(filters.Regex("^🔎 Şehre Göre Ara$"), sehir_arama_baslat)],
