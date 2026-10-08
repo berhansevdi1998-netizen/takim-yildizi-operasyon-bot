@@ -164,21 +164,6 @@ def veritabani_hazirla():
                 eklenme_tarihi TIMESTAMP NOT NULL
             )""")
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS acil_ring (
-                    id INTEGER PRIMARY KEY,
-                    aktif BOOLEAN NOT NULL DEFAULT FALSE,
-                    chat_id BIGINT,
-                    mesaj TEXT,
-                    last_message_id BIGINT,
-                    baslatan TEXT,
-                    baslama_tarihi TIMESTAMP
-                )
-            """)
-            cur.execute("""
-                INSERT INTO acil_ring (id, aktif) VALUES (1, FALSE)
-                ON CONFLICT (id) DO NOTHING
-            """)
-            cur.execute("""
                 CREATE TABLE IF NOT EXISTS onemli_talimat (
                     id INTEGER PRIMARY KEY,
                     aktif BOOLEAN NOT NULL DEFAULT FALSE,
@@ -230,7 +215,6 @@ DUZENLE_ID = 26
 DUZENLE_SECIM = 27
 DUZENLE_DEGER = 28
 DUZENLE_ONAY = 29
-ACIL_RING_MESAJ = 103
 ONEMLI_TALIMAT_MESAJ = 104
 
 
@@ -244,7 +228,6 @@ ana_menu = ReplyKeyboardMarkup(
         ["📦 Açık İşler", "📥 İş Al"],
         ["🚚 Alınan İşler", "📍 Sipariş Konumu Ekle"],
         ["🚨 Acil İş", "🔎 Şehre Göre Ara"],
-        ["🚨 Acil Ring Başlat", "✅ Acil Ring Kapat"],
         ["📢 Önemli Talimat", "✅ Talimat Tamamlandı"],
         ["✏️ Alınan İş Düzenle", "✏️ Bekleyen İş Düzenle"],
         ["📲 Bekleyen Karşı Ödemeler"],
@@ -2733,83 +2716,7 @@ async def ses_dosyasi_al(update, context):
 
 
 # =========================================================
-# ACIL RING - HER 1 DAKIKADA GRUBUN EN ALTINA YENILER
-# =========================================================
-
-def acil_ring_metni(mesaj):
-    return (
-        "🚨🚨🚨 ACİL RİNG UYARISI 🚨🚨🚨\n\n"
-        + mesaj.strip() +
-        "\n\n⚠️ BU UYARI RİNG KAPATILANA KADAR HER 1 DAKİKADA YENİLENİR."
-    )
-
-async def acil_ring_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🚨 ACİL RİNG\n\nGruba her 1 dakikada bir gönderilecek uyarı metnini yazınız.\n"
-        "Ring kapatılana kadar uyarı sürekli en alta yenilenecek.",
-        reply_markup=islem_iptal_menu
-    )
-    return ACIL_RING_MESAJ
-
-async def acil_ring_mesaj_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mesaj = (update.message.text or "").strip()
-    if not mesaj:
-        await update.message.reply_text("❌ Ring mesajı boş olamaz.")
-        return ACIL_RING_MESAJ
-    chat_id = update.effective_chat.id
-    baslatan = kullanici_adi_getir(update)
-    gonderilen = await context.bot.send_message(chat_id=chat_id, text=acil_ring_metni(mesaj))
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                UPDATE acil_ring SET aktif=TRUE, chat_id=%s, mesaj=%s,
-                    last_message_id=%s, baslatan=%s, baslama_tarihi=%s
-                WHERE id=1
-            """, (chat_id, mesaj, gonderilen.message_id, baslatan, turkiye_saati()))
-        conn.commit()
-    await update.message.reply_text("✅ Acil Ring başlatıldı. Uyarı her 1 dakikada bir en alta yenilenecek.", reply_markup=ana_menu)
-    return ConversationHandler.END
-
-async def acil_ring_kapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT aktif, chat_id, last_message_id FROM acil_ring WHERE id=1")
-            row = cur.fetchone()
-            cur.execute("UPDATE acil_ring SET aktif=FALSE, last_message_id=NULL WHERE id=1")
-        conn.commit()
-    if row and row[0] and row[1] and row[2]:
-        try:
-            await context.bot.delete_message(chat_id=row[1], message_id=row[2])
-        except Exception:
-            pass
-    await update.message.reply_text("✅ ACİL RİNG KAPATILDI. Otomatik uyarılar durduruldu.", reply_markup=ana_menu)
-
-async def acil_ring_dongusu(application):
-    while True:
-        await asyncio.sleep(60)
-        try:
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT aktif, chat_id, mesaj, last_message_id FROM acil_ring WHERE id=1")
-                    row = cur.fetchone()
-            if not row or not row[0] or not row[1] or not row[2]:
-                continue
-            _, chat_id, mesaj, eski_id = row
-            if eski_id:
-                try:
-                    await application.bot.delete_message(chat_id=chat_id, message_id=eski_id)
-                except Exception:
-                    pass
-            yeni = await application.bot.send_message(chat_id=chat_id, text=acil_ring_metni(mesaj))
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("UPDATE acil_ring SET last_message_id=%s WHERE id=1 AND aktif=TRUE", (yeni.message_id,))
-                conn.commit()
-        except Exception as exc:
-            print(f"Acil Ring yenileme hatasi: {exc}")
-
-# =========================================================
-# ONEMLI TALIMAT - ACIL RINGDEN BAGIMSIZ, HER 1 DAKIKADA YENILER
+# ONEMLI TALIMAT - HER 1 DAKIKADA YENILER
 # =========================================================
 
 def onemli_talimat_metni(mesaj):
@@ -2895,11 +2802,17 @@ async def onemli_talimat_dongusu(application):
             print(f"Onemli Talimat yenileme hatasi: {exc}")
 
 async def uygulama_baslarken(application):
-    application.create_task(acil_ring_dongusu(application))
     application.create_task(onemli_talimat_dongusu(application))
 
 
 def main():
+    # Eski Acil Ring varsa yayini durdur; eski tabloyu ve verileri silme.
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.acil_ring')")
+            if cur.fetchone()[0] is not None:
+                cur.execute("UPDATE acil_ring SET aktif=FALSE WHERE id=1")
+        conn.commit()
     application = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -3191,13 +3104,6 @@ def main():
     )
 
     application.add_handler(duzenle_conversation)
-
-    application.add_handler(ConversationHandler(per_chat=True, per_user=True,
-        entry_points=[MessageHandler(filters.Regex("^🚨 Acil Ring Başlat$"), acil_ring_baslat)],
-        states={ACIL_RING_MESAJ: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), acil_ring_mesaj_al)]},
-        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
-    ))
-    application.add_handler(MessageHandler(filters.Regex("^✅ Acil Ring Kapat$"), acil_ring_kapat))
 
     application.add_handler(ConversationHandler(per_chat=True, per_user=True,
         entry_points=[MessageHandler(filters.Regex("^📢 Önemli Talimat$"), onemli_talimat_baslat)],
