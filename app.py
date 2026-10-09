@@ -174,6 +174,8 @@ def veritabani_hazirla():
                     baslama_tarihi TIMESTAMP
                 )
             """)
+            cur.execute("ALTER TABLE onemli_talimat ADD COLUMN IF NOT EXISTS medya_tipi TEXT NOT NULL DEFAULT 'text'")
+            cur.execute("ALTER TABLE onemli_talimat ADD COLUMN IF NOT EXISTS medya_file_id TEXT")
             cur.execute("""
                 INSERT INTO onemli_talimat (id, aktif) VALUES (1, FALSE)
                 ON CONFLICT (id) DO NOTHING
@@ -2729,33 +2731,57 @@ def onemli_talimat_metni(mesaj):
 
 async def onemli_talimat_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📢 ÖNEMLİ TALİMAT\n\nPersonelin gözden kaçırmaması gereken talimatı yazınız.\n"
+        "📢 ÖNEMLİ TALİMAT\n\nTalimatı yazın veya ses kaydı gönderin.\n"
         "Talimat tamamlanana kadar her 1 dakikada bir grubun en altına yenilenecek.",
         reply_markup=islem_iptal_menu
     )
     return ONEMLI_TALIMAT_MESAJ
 
 async def onemli_talimat_mesaj_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mesaj = (update.message.text or "").strip()
-    if not mesaj:
-        await update.message.reply_text("❌ Talimat boş olamaz.")
+    gelen = update.message
+    mesaj = (gelen.text or "").strip()
+    if gelen.voice:
+        medya_tipi, medya_file_id = "voice", gelen.voice.file_id
+    elif gelen.audio:
+        medya_tipi, medya_file_id = "audio", gelen.audio.file_id
+    elif mesaj:
+        medya_tipi, medya_file_id = "text", None
+    else:
+        await gelen.reply_text("❌ Yazılı talimat veya ses kaydı gönderiniz.")
         return ONEMLI_TALIMAT_MESAJ
+
     chat_id = update.effective_chat.id
     baslatan = kullanici_adi_getir(update)
-    gonderilen = await context.bot.send_message(chat_id=chat_id, text=onemli_talimat_metni(mesaj))
+    if medya_tipi == "voice":
+        gonderilen = await context.bot.send_voice(chat_id=chat_id, voice=medya_file_id,
+            caption=onemli_talimat_ses_basligi())
+    elif medya_tipi == "audio":
+        gonderilen = await context.bot.send_audio(chat_id=chat_id, audio=medya_file_id,
+            caption=onemli_talimat_ses_basligi())
+    else:
+        gonderilen = await context.bot.send_message(chat_id=chat_id, text=onemli_talimat_metni(mesaj))
+
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE onemli_talimat SET aktif=TRUE, chat_id=%s, mesaj=%s,
+                    medya_tipi=%s, medya_file_id=%s,
                     last_message_id=%s, baslatan=%s, baslama_tarihi=%s
                 WHERE id=1
-            """, (chat_id, mesaj, gonderilen.message_id, baslatan, turkiye_saati()))
+            """, (chat_id, mesaj or None, medya_tipi, medya_file_id,
+                  gonderilen.message_id, baslatan, turkiye_saati()))
         conn.commit()
-    await update.message.reply_text(
+    await gelen.reply_text(
         "✅ Önemli Talimat yayınlandı. Tamamlanana kadar her 1 dakikada bir en alta yenilenecek.",
         reply_markup=ana_menu
     )
     return ConversationHandler.END
+
+
+def onemli_talimat_ses_basligi():
+    return ("🚨🚨🚨 ÖNEMLİ TALİMAT 🚨🚨🚨\n"
+            "⚠️ TÜM PERSONELİN DİKKATİNE ⚠️\n"
+            "❗ TAMAMLANANA KADAR HER 1 DAKİKADA YENİLENİR.")
 
 async def onemli_talimat_kapat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with get_db() as conn:
@@ -2780,24 +2806,42 @@ async def onemli_talimat_dongusu(application):
         try:
             with get_db() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT aktif, chat_id, mesaj, last_message_id FROM onemli_talimat WHERE id=1")
+                    cur.execute("""SELECT aktif, chat_id, mesaj, last_message_id,
+                                         medya_tipi, medya_file_id
+                                  FROM onemli_talimat WHERE id=1""")
                     row = cur.fetchone()
-            if not row or not row[0] or not row[1] or not row[2]:
+            if not row or not row[0] or not row[1]:
                 continue
-            _, chat_id, mesaj, eski_id = row
-            if eski_id:
+            _, chat_id, mesaj, eski_id, medya_tipi, medya_file_id = row
+            # Önce yeni uyarıyı gönder; gönderim başarısızsa eski uyarı kalsın.
+            if medya_tipi == "voice" and medya_file_id:
+                yeni = await application.bot.send_voice(chat_id=chat_id,
+                    voice=medya_file_id, caption=onemli_talimat_ses_basligi())
+            elif medya_tipi == "audio" and medya_file_id:
+                yeni = await application.bot.send_audio(chat_id=chat_id,
+                    audio=medya_file_id, caption=onemli_talimat_ses_basligi())
+            elif mesaj:
+                yeni = await application.bot.send_message(chat_id=chat_id,
+                    text=onemli_talimat_metni(mesaj))
+            else:
+                continue
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""UPDATE onemli_talimat SET last_message_id=%s
+                                   WHERE id=1 AND aktif=TRUE AND chat_id=%s
+                                   RETURNING id""", (yeni.message_id, chat_id))
+                    hala_aktif = cur.fetchone() is not None
+                conn.commit()
+            if not hala_aktif:
+                try:
+                    await application.bot.delete_message(chat_id=chat_id, message_id=yeni.message_id)
+                except Exception:
+                    pass
+            elif eski_id:
                 try:
                     await application.bot.delete_message(chat_id=chat_id, message_id=eski_id)
                 except Exception:
                     pass
-            yeni = await application.bot.send_message(chat_id=chat_id, text=onemli_talimat_metni(mesaj))
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "UPDATE onemli_talimat SET last_message_id=%s WHERE id=1 AND aktif=TRUE",
-                        (yeni.message_id,)
-                    )
-                conn.commit()
         except Exception as exc:
             print(f"Onemli Talimat yenileme hatasi: {exc}")
 
@@ -3107,7 +3151,7 @@ def main():
 
     application.add_handler(ConversationHandler(per_chat=True, per_user=True,
         entry_points=[MessageHandler(filters.Regex("^📢 Önemli Talimat$"), onemli_talimat_baslat)],
-        states={ONEMLI_TALIMAT_MESAJ: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), onemli_talimat_mesaj_al)]},
+        states={ONEMLI_TALIMAT_MESAJ: [MessageHandler((filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$")) | filters.VOICE | filters.AUDIO, onemli_talimat_mesaj_al)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
     ))
     application.add_handler(MessageHandler(filters.Regex("^✅ Talimat Tamamlandı$"), onemli_talimat_kapat))
