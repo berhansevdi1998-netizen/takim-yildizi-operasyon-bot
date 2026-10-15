@@ -180,6 +180,25 @@ def veritabani_hazirla():
                 INSERT INTO onemli_talimat (id, aktif) VALUES (1, FALSE)
                 ON CONFLICT (id) DO NOTHING
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS personel_mesaileri (
+                    id BIGSERIAL PRIMARY KEY,
+                    telegram_id BIGINT NOT NULL,
+                    personel_adi TEXT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    giris TIMESTAMP NOT NULL,
+                    cikis TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS personel_aktif_mesai_idx
+                ON personel_mesaileri (telegram_id)
+                WHERE cikis IS NULL
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS personel_mesai_tarih_idx
+                ON personel_mesaileri (giris DESC)
+            """)
         conn.commit()
 
 
@@ -235,6 +254,8 @@ ana_menu = ReplyKeyboardMarkup(
         ["📲 Bekleyen Karşı Ödemeler"],
         ["📜 Tahsil Edilen Karşı Ödemeler"],
         ["🏦 IBAN Bilgileri"],
+        ["🟢 Mesaiye Başla", "🔴 Mesaiyi Bitir"],
+        ["📋 Mesai Listesi"],
     ],
     resize_keyboard=True
 , selective=True)
@@ -400,6 +421,95 @@ def kullanici_adi_getir(update):
         return f"@{kullanici.username}"
 
     return str(kullanici.id)
+
+
+# =========================================================
+# PERSONEL MESAİ KAYITLARI
+# =========================================================
+
+async def mesai_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici = update.effective_user
+    ad = kullanici_adi_getir(update)
+    simdi = turkiye_saati()
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Aynı kullanıcının çift mesai açmasını veritabanı engeller.
+            cur.execute("""
+                INSERT INTO personel_mesaileri
+                    (telegram_id, personel_adi, chat_id, giris)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (telegram_id) WHERE cikis IS NULL DO NOTHING
+                RETURNING id
+            """, (kullanici.id, ad, update.effective_chat.id, simdi))
+            yeni = cur.fetchone()
+            if not yeni:
+                cur.execute("""
+                    SELECT giris FROM personel_mesaileri
+                    WHERE telegram_id=%s AND cikis IS NULL
+                """, (kullanici.id,))
+                onceki = cur.fetchone()
+        conn.commit()
+    if not yeni:
+        mesaj = (f"⚠️ {ad}, mesainiz zaten açık.\n"
+                 f"Giriş: {onceki[0].strftime('%d.%m.%Y %H:%M') if onceki else '-'}")
+    else:
+        mesaj = (f"🟢 {ad} mesaiye başladı.\n"
+                 f"Giriş: {simdi.strftime('%d.%m.%Y %H:%M')}\n\n"
+                 "📍 Lütfen bu gruba 8 saatlik Telegram canlı konumunuzu paylaşın.")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=mesaj, reply_markup=ana_menu)
+
+
+async def mesai_bitir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kullanici = update.effective_user
+    ad = kullanici_adi_getir(update)
+    simdi = turkiye_saati()
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE personel_mesaileri SET cikis=%s
+                WHERE id=(
+                    SELECT id FROM personel_mesaileri
+                    WHERE telegram_id=%s AND cikis IS NULL
+                    ORDER BY giris DESC LIMIT 1
+                )
+                RETURNING giris
+            """, (simdi, kullanici.id))
+            kayit = cur.fetchone()
+        conn.commit()
+    if not kayit:
+        mesaj = f"⚠️ {ad}, açık mesai kaydınız bulunamadı."
+    else:
+        sure = simdi - kayit[0]
+        dakika = max(0, int(sure.total_seconds() // 60))
+        mesaj = (f"🔴 {ad} mesaiyi bitirdi.\n"
+                 f"Giriş: {kayit[0].strftime('%H:%M')}\n"
+                 f"Çıkış: {simdi.strftime('%H:%M')}\n"
+                 f"Toplam: {dakika // 60} saat {dakika % 60} dakika\n\n"
+                 "📍 Canlı konum paylaşımınızı durdurmayı unutmayın.")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=mesaj, reply_markup=ana_menu)
+
+
+async def mesai_listesi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bugun = turkiye_saati().date()
+    yarin = bugun + timedelta(days=1)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT personel_adi, giris, cikis
+                FROM personel_mesaileri
+                WHERE chat_id=%s AND (giris >= %s AND giris < %s OR cikis IS NULL)
+                ORDER BY giris DESC LIMIT 50
+            """, (update.effective_chat.id, bugun, yarin))
+            kayitlar = cur.fetchall()
+    if not kayitlar:
+        mesaj = "📋 Bugün bu grupta mesai kaydı bulunmuyor."
+    else:
+        satirlar = [f"📋 MESAİ LİSTESİ — {bugun.strftime('%d.%m.%Y')}\n"]
+        for ad, giris, cikis in kayitlar:
+            bitis = cikis.strftime('%H:%M') if cikis else '🟢 Devam ediyor'
+            satirlar.append(f"👤 {ad}\n🕘 {giris.strftime('%d.%m %H:%M')} → {bitis}\n")
+        mesaj = "\n".join(satirlar)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=mesaj[:4000], reply_markup=ana_menu)
 
 
 # =========================================================
@@ -3117,6 +3227,10 @@ def main():
         },
         fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
     )
+
+    application.add_handler(MessageHandler(filters.Regex("^🟢 Mesaiye Başla$"), mesai_baslat))
+    application.add_handler(MessageHandler(filters.Regex("^🔴 Mesaiyi Bitir$"), mesai_bitir))
+    application.add_handler(MessageHandler(filters.Regex("^📋 Mesai Listesi$"), mesai_listesi))
 
     application.add_handler(
         CommandHandler("start", start)
