@@ -3,8 +3,11 @@ import json
 import base64
 import io
 import asyncio
+import html
+import tempfile
+from pathlib import Path
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import psycopg
@@ -191,6 +194,21 @@ def veritabani_hazirla():
                 )
             """)
             cur.execute("""
+                CREATE TABLE IF NOT EXISTS personel_canli_konum (
+                    chat_id BIGINT NOT NULL,
+                    telegram_id BIGINT NOT NULL,
+                    personel_adi TEXT NOT NULL,
+                    message_id BIGINT NOT NULL,
+                    enlem DOUBLE PRECISION NOT NULL,
+                    boylam DOUBLE PRECISION NOT NULL,
+                    baslangic TIMESTAMP NOT NULL,
+                    son_guncelleme TIMESTAMP NOT NULL,
+                    bitis TIMESTAMP NOT NULL,
+                    PRIMARY KEY (chat_id, telegram_id)
+                )
+            """)
+
+            cur.execute("""
                 CREATE UNIQUE INDEX IF NOT EXISTS personel_aktif_mesai_idx
                 ON personel_mesaileri (telegram_id)
                 WHERE cikis IS NULL
@@ -255,7 +273,7 @@ ana_menu = ReplyKeyboardMarkup(
         ["📜 Tahsil Edilen Karşı Ödemeler"],
         ["🏦 IBAN Bilgileri"],
         ["🟢 Mesaiye Başla", "🔴 Mesaiyi Bitir"],
-        ["📋 Mesai Listesi"],
+        ["📋 Mesai Listesi", "🗺️ Personel Haritası"],
     ],
     resize_keyboard=True
 , selective=True)
@@ -510,6 +528,115 @@ async def mesai_listesi(update: Update, context: ContextTypes.DEFAULT_TYPE):
             satirlar.append(f"👤 {ad}\n🕘 {giris.strftime('%d.%m %H:%M')} → {bitis}\n")
         mesaj = "\n".join(satirlar)
     await context.bot.send_message(chat_id=update.effective_chat.id, text=mesaj[:4000], reply_markup=ana_menu)
+
+
+# =========================================================
+# PERSONEL CANLI KONUM HARITASI
+# =========================================================
+
+async def canli_konum_kaydet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mesaj = update.effective_message
+    if not mesaj or not mesaj.location or not update.effective_user:
+        return
+    if update.effective_chat.type not in ("group", "supergroup"):
+        return
+    konum = mesaj.location
+    simdi = turkiye_saati()
+    ad = kullanici_adi_getir(update)
+    # Yalnızca canlı konumları kaydet; normal tek seferlik konumları izleme.
+    if not konum.live_period:
+        return
+    # Başlangıç zamanı, ilk mesajın Telegram tarihidir; editlerde değişmez.
+    baslangic = mesaj.date.astimezone(TURKIYE_SAAT_DILIMI).replace(tzinfo=None)
+    bitis = baslangic + timedelta(seconds=konum.live_period)
+    if bitis <= simdi:
+        return
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO personel_canli_konum
+                  (chat_id, telegram_id, personel_adi, message_id, enlem, boylam,
+                   baslangic, son_guncelleme, bitis)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (chat_id, telegram_id) DO UPDATE SET
+                  personel_adi=EXCLUDED.personel_adi,
+                  message_id=EXCLUDED.message_id,
+                  enlem=EXCLUDED.enlem, boylam=EXCLUDED.boylam,
+                  baslangic=EXCLUDED.baslangic,
+                  son_guncelleme=EXCLUDED.son_guncelleme,
+                  bitis=EXCLUDED.bitis
+                WHERE personel_canli_konum.message_id = EXCLUDED.message_id
+                   OR personel_canli_konum.baslangic <= EXCLUDED.baslangic
+            """, (update.effective_chat.id, update.effective_user.id, ad,
+                  mesaj.message_id, konum.latitude, konum.longitude,
+                  baslangic, simdi, bitis))
+        conn.commit()
+
+
+async def personel_haritasi(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type not in ("group", "supergroup"):
+        await update.effective_message.reply_text("🗺️ Haritayı Operasyon grubundan açın.")
+        return
+    simdi = turkiye_saati()
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT k.personel_adi, k.enlem, k.boylam, k.son_guncelleme
+                FROM personel_canli_konum k
+                WHERE k.chat_id=%s AND k.bitis > %s
+                  AND EXISTS (
+                    SELECT 1 FROM personel_mesaileri m
+                    WHERE m.chat_id=k.chat_id AND m.telegram_id=k.telegram_id
+                      AND m.cikis IS NULL
+                  )
+                ORDER BY k.personel_adi
+            """, (update.effective_chat.id, simdi))
+            kayitlar = cur.fetchall()
+    if not kayitlar:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="📍 Mesaide olup canlı konumu bota ulaşmış personel bulunamadı. "
+                 "Personeller canlı konumlarını yeniden paylaşabilir.")
+        return
+
+    # Dosya Telegram grubuna gönderilir; herkese açık web adresi oluşturulmaz.
+    # Harita döşemeleri için tarayıcı internet bağlantısı kullanır.
+    veriler = [{"ad": ad, "lat": lat, "lon": lon,
+                "saat": tarih.strftime("%H:%M"),
+                "eski": (simdi-tarih).total_seconds() > 600}
+               for ad, lat, lon, tarih in kayitlar]
+    import json as _json
+    veri_json = _json.dumps(veriler, ensure_ascii=False).replace("<", "\u003c")
+    sayfa = """<!doctype html><html lang="tr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Takım Yıldızı Personel Haritası</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>body{margin:0;font:15px Arial}header{padding:12px;background:#172b40;color:white}
+#map{height:calc(100vh - 100px)}small{color:#ddd}</style></head><body>
+<header><b>🗺️ Takım Yıldızı — Personel Haritası</b><div><small>
+Bu harita açıldığı andaki son konumların görüntüsüdür. Yenilemek için botta butona tekrar basın.
+</small></div></header><div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>const people=__DATA__;const map=L.map('map');
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+{attribution:'© OpenStreetMap contributors'}).addTo(map);
+const bounds=[];
+for(const p of people){const pt=[p.lat,p.lon];bounds.push(pt);
+const marker=L.marker(pt).addTo(map);const el=document.createElement('div');
+const title=document.createElement('b');title.textContent=p.ad;el.appendChild(title);
+el.appendChild(document.createElement('br'));
+el.appendChild(document.createTextNode('Son güncelleme: '+p.saat));
+if(p.eski){el.appendChild(document.createElement('br'));
+el.appendChild(document.createTextNode('⚠️ Konum 10 dakikadan eski'));}
+marker.bindPopup(el);marker.bindTooltip(p.ad);}
+map.fitBounds(bounds,{padding:[35,35],maxZoom:15});</script></body></html>""".replace("__DATA__", veri_json)
+    dosya = io.BytesIO(sayfa.encode("utf-8"))
+    dosya.name = "personel_haritasi.html"
+    await context.bot.send_document(
+        chat_id=update.effective_chat.id, document=dosya,
+        caption=(f"🗺️ {len(veriler)} personelin son konumu. HTML dosyasını "
+                 "indirip tarayıcıda açın. Harita otomatik yenilenmez. "
+                 "Konumlar yalnızca mesai sırasında gösterilir."))
 
 
 # =========================================================
@@ -3231,6 +3358,8 @@ def main():
     application.add_handler(MessageHandler(filters.Regex("^🟢 Mesaiye Başla$"), mesai_baslat))
     application.add_handler(MessageHandler(filters.Regex("^🔴 Mesaiyi Bitir$"), mesai_bitir))
     application.add_handler(MessageHandler(filters.Regex("^📋 Mesai Listesi$"), mesai_listesi))
+    application.add_handler(MessageHandler(filters.Regex("^🗺️ Personel Haritası$"), personel_haritasi))
+    application.add_handler(MessageHandler(filters.LOCATION & filters.ChatType.GROUPS, canli_konum_kaydet), group=1)
 
     application.add_handler(
         CommandHandler("start", start)
