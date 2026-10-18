@@ -273,8 +273,6 @@ ana_menu = ReplyKeyboardMarkup(
         ["📲 Bekleyen Karşı Ödemeler"],
         ["📜 Tahsil Edilen Karşı Ödemeler"],
         ["🏦 IBAN Bilgileri"],
-        ["🟢 Mesaiye Başla", "🔴 Mesaiyi Bitir"],
-        ["📋 Mesai Listesi", "🗺️ Personel Haritası"],
     ],
     resize_keyboard=True
 , selective=True)
