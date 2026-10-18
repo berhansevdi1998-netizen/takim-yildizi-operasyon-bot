@@ -3,6 +3,7 @@ import json
 import base64
 import io
 import asyncio
+import calendar
 import html
 import tempfile
 from pathlib import Path
@@ -265,9 +266,10 @@ ana_menu = ReplyKeyboardMarkup(
     [
         ["➕ Sipariş Ekle"],
         ["📦 Açık İşler", "📥 İş Al"],
-        ["🚚 Alınan İşler", "📚 Geçmiş İşler"],
+        ["🚚 Alınan İşler"],
         ["📍 Sipariş Konumu Ekle"],
         ["🚨 Acil İş", "🔎 Şehre Göre Ara"],
+        ["📚 Geçmiş İşler"],
         ["📢 Önemli Talimat", "✅ Talimat Tamamlandı"],
         ["✏️ Alınan İş Düzenle", "✏️ Bekleyen İş Düzenle"],
         ["📲 Bekleyen Karşı Ödemeler"],
@@ -2280,36 +2282,143 @@ async def sehir_arama_sonuc(
 # =========================================================
 # GECMIS ISLER - SADECE OKUMA
 # =========================================================
+def gecmis_tarih_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Dün", callback_data="gh:quick:1"),
+         InlineKeyboardButton("📅 Önceki Gün", callback_data="gh:quick:2")],
+        [InlineKeyboardButton("📅 Son 7 Gün", callback_data="gh:quick:7"),
+         InlineKeyboardButton("📅 Son 30 Gün", callback_data="gh:quick:30")],
+        [InlineKeyboardButton("🗓️ Takvimden Tarih Seç", callback_data="gh:cal:0")],
+    ])
+
+
+def gecmis_takvim(yil, ay):
+    bugun = turkiye_saati().date()
+    onceki = (datetime(yil, ay, 1) - timedelta(days=1)).date()
+    sonraki = (datetime(yil, ay, 28) + timedelta(days=4)).replace(day=1).date()
+    satirlar = [[InlineKeyboardButton(f"{ay:02d}.{yil}", callback_data="gh:noop")],
+                [InlineKeyboardButton(g, callback_data="gh:noop") for g in ("Pt", "Sa", "Ça", "Pe", "Cu", "Ct", "Pa")]]
+    for hafta in calendar.monthcalendar(yil, ay):
+        satirlar.append([InlineKeyboardButton(str(gun) if gun else "·",
+                       callback_data=f"gh:date:{yil:04d}-{ay:02d}-{gun:02d}" if gun and datetime(yil, ay, gun).date() <= bugun else "gh:noop")
+                       for gun in hafta])
+    satirlar.append([
+        InlineKeyboardButton("◀ Önceki", callback_data=f"gh:month:{onceki.year}-{onceki.month}"),
+        InlineKeyboardButton("Menü", callback_data="gh:home"),
+        InlineKeyboardButton("Sonraki ▶", callback_data=f"gh:month:{sonraki.year}-{sonraki.month}" if sonraki <= bugun else "gh:noop"),
+    ])
+    return InlineKeyboardMarkup(satirlar)
+
+
 async def gecmis_isler_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=("📚 GEÇMİŞ İŞLER\n\n"
-              "Tarih yazın. İsterseniz yanına şehir ekleyin.\n\n"
-              "Örnekler:\n17.10.2026\n17.10.2026 Silifke\n\n"
-              "❌ İşlemden Vazgeç ile çıkabilirsiniz."),
-        reply_markup=islem_iptal_menu,
+        text="📚 GEÇMİŞ İŞLER\n\nTarihi aşağıdaki butonlardan seçin:",
+        reply_markup=gecmis_tarih_menu(),
     )
     return GECMIS_ARAMA
 
 
+async def gecmis_isler_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data or ""
+    bugun = turkiye_saati().date()
+    if data == "gh:noop":
+        return GECMIS_ARAMA
+    if data == "gh:home":
+        await query.edit_message_text("📚 GEÇMİŞ İŞLER\n\nTarihi seçin:", reply_markup=gecmis_tarih_menu())
+        return GECMIS_ARAMA
+    if data.startswith("gh:cal:"):
+        await query.edit_message_text("🗓️ Tarih seçin:", reply_markup=gecmis_takvim(bugun.year, bugun.month))
+        return GECMIS_ARAMA
+    if data.startswith("gh:month:"):
+        try:
+            yil, ay = map(int, data.split(":")[2].split("-"))
+            assert 2020 <= yil <= bugun.year and 1 <= ay <= 12
+        except (ValueError, AssertionError, IndexError):
+            return GECMIS_ARAMA
+        await query.edit_message_text("🗓️ Tarih seçin:", reply_markup=gecmis_takvim(yil, ay))
+        return GECMIS_ARAMA
+    if data.startswith("gh:date:"):
+        try:
+            tarih = datetime.strptime(data.split(":")[2], "%Y-%m-%d").date()
+            assert tarih <= bugun
+        except (ValueError, AssertionError, IndexError):
+            return GECMIS_ARAMA
+        baslangic, bitis = tarih, tarih + timedelta(days=1)
+        etiket = tarih.strftime("%d.%m.%Y")
+    elif data.startswith("gh:quick:"):
+        try:
+            gun = int(data.split(":")[2])
+            assert gun in (1, 2, 7, 30)
+        except (ValueError, AssertionError, IndexError):
+            return GECMIS_ARAMA
+        if gun in (1, 2):
+            baslangic = bugun - timedelta(days=gun)
+            bitis = baslangic + timedelta(days=1)
+            etiket = baslangic.strftime("%d.%m.%Y")
+        else:
+            baslangic, bitis = bugun - timedelta(days=gun-1), bugun + timedelta(days=1)
+            etiket = f"Son {gun} Gün"
+    else:
+        return GECMIS_ARAMA
+    context.user_data["gecmis_aralik"] = (baslangic.isoformat(), bitis.isoformat(), etiket)
+    await query.edit_message_text(
+        f"📚 {etiket}\n\nTüm işleri görmek için 'Tüm İşler', şehirle filtrelemek için 'Şehir Ara' seçin.",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📦 Tüm İşler", callback_data="gh:all"),
+            InlineKeyboardButton("🔎 Şehir Ara", callback_data="gh:city")],
+            [InlineKeyboardButton("↩ Tarih Değiştir", callback_data="gh:home")]]),
+    )
+    return GECMIS_ARAMA
+
+
+async def gecmis_isler_secim(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "gh:city":
+        if not context.user_data.get("gecmis_aralik"):
+            await query.edit_message_text("Önce tarih seçin.", reply_markup=gecmis_tarih_menu())
+            return GECMIS_ARAMA
+        await query.edit_message_text("🔎 Şehir adını yazın. Örnek: Silifke\n\nİptal için /iptal yazabilirsiniz.")
+        return GECMIS_ARAMA
+    if query.data == "gh:all":
+        aralik = context.user_data.get("gecmis_aralik")
+        if not aralik:
+            await query.edit_message_text("Önce tarih seçin.", reply_markup=gecmis_tarih_menu())
+            return GECMIS_ARAMA
+        await query.edit_message_text("📚 Kayıtlar getiriliyor...")
+        await gecmis_kayitlarini_goster(context, query.message.chat_id, *aralik, "")
+        return ConversationHandler.END
+    return GECMIS_ARAMA
+
+
 async def gecmis_isler_sonuc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    girdi = (update.message.text or "").strip()
-    parcalar = girdi.split(maxsplit=1)
+    sehir = (update.message.text or "").strip()
+    aralik = context.user_data.get("gecmis_aralik")
+    if aralik:
+        await gecmis_kayitlarini_goster(context, update.effective_chat.id, *aralik, sehir)
+        return ConversationHandler.END
+    # Eski tarih girme alışkanlığı da çalışmaya devam eder.
+    parcalar = sehir.split(maxsplit=1)
     try:
         tarih = datetime.strptime(parcalar[0], "%d.%m.%Y").date()
         if tarih > turkiye_saati().date():
             raise ValueError()
     except (ValueError, IndexError):
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="❌ Tarihi GG.AA.YYYY biçiminde yazın. Örnek: 17.10.2026 Silifke",
-        )
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+            text="Lütfen yukarıdaki tarih butonlarını kullanın.", reply_markup=gecmis_tarih_menu())
         return GECMIS_ARAMA
+    await gecmis_kayitlarini_goster(context, update.effective_chat.id,
+        tarih.isoformat(), (tarih + timedelta(days=1)).isoformat(),
+        tarih.strftime("%d.%m.%Y"), parcalar[1].strip() if len(parcalar) > 1 else "")
+    return ConversationHandler.END
 
-    sehir = parcalar[1].strip() if len(parcalar) > 1 else ""
-    baslangic = datetime.combine(tarih, datetime.min.time())
-    bitis = baslangic + timedelta(days=1)
-    # Alınmış veya daha sonra iptal edilmiş siparişleri de içerir.
+
+async def gecmis_kayitlarini_goster(context, chat_id, baslangic, bitis, etiket, sehir):
+    baslangic = datetime.combine(datetime.fromisoformat(baslangic).date(), datetime.min.time())
+    bitis = datetime.combine(datetime.fromisoformat(bitis).date(), datetime.min.time())
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -2330,18 +2439,18 @@ async def gecmis_isler_sonuc(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if not kayitlar:
         await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=(f"📚 {tarih.strftime('%d.%m.%Y')}"
+            chat_id=chat_id,
+            text=(f"📚 {etiket}"
                   f"{' — ' + sehir if sehir else ''}\n\n"
-                  "Bu tarihte eşleşen alınmış iş kaydı bulunamadı. "
+                  "Seçilen dönemde eşleşen alınmış iş kaydı bulunamadı. "
                   "Bu sonuç, parçanın hiç teslim alınmadığını tek başına kanıtlamaz."),
             reply_markup=ana_menu,
         )
-        return ConversationHandler.END
+        return None
 
     sinir_var = len(kayitlar) > 200
     kayitlar = kayitlar[:200]
-    baslik = (f"📚 GEÇMİŞ İŞLER — {tarih.strftime('%d.%m.%Y')}"
+    baslik = (f"📚 GEÇMİŞ İŞLER — {etiket}"
               f"{' — ' + sehir if sehir else ''}\n"
               f"Gösterilen kayıt: {len(kayitlar)}"
               + (" (ilk 200; şehirle daraltın)" if sinir_var else "") + "\n\n")
@@ -2352,21 +2461,21 @@ async def gecmis_isler_sonuc(update: Update, context: ContextTypes.DEFAULT_TYPE)
                  f"📦 {metin}\n"
                  + (f"🏙️ {sehirler}\n" if sehirler else "")
                  + f"👤 {personel or '-'}\n"
-                 + f"🕐 {alinma.strftime('%H:%M') if alinma else '-'}\n"
+                 + f"🕐 {alinma.strftime('%d.%m %H:%M') if alinma else '-'}\n"
                  + f"💳 {odeme or '-'}"
                  + (f" | {abs(float(ucret)):,.2f} ₺" if ucret is not None else "")
                  + "\n────────────\n")
         if len(parca) + len(satir) > 3800:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=parca)
+            await context.bot.send_message(chat_id=chat_id, text=parca)
             parca = ""
         # Telegram tek mesaj limiti için uzun açıklamaları böl.
         while len(satir) > 3800:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=satir[:3800])
+            await context.bot.send_message(chat_id=chat_id, text=satir[:3800])
             satir = satir[3800:]
         parca += satir
     if parca:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text=parca, reply_markup=ana_menu)
-    return ConversationHandler.END
+        await context.bot.send_message(chat_id=chat_id, text=parca, reply_markup=ana_menu)
+    return None
 
 
 async def alinan_isler(
@@ -3512,9 +3621,10 @@ def main():
     application.add_handler(ConversationHandler(
         per_chat=True, per_user=True,
         entry_points=[MessageHandler(filters.Regex("^📚 Geçmiş İşler$"), gecmis_isler_baslat)],
-        states={GECMIS_ARAMA: [MessageHandler(
-            filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
-            gecmis_isler_sonuc)]},
+        states={GECMIS_ARAMA: [
+            CallbackQueryHandler(gecmis_isler_secim, pattern=r"^gh:(all|city)$"),
+            CallbackQueryHandler(gecmis_isler_callback, pattern=r"^gh:"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), gecmis_isler_sonuc)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal),
                    CommandHandler("iptal", iptal)],
     ))
