@@ -265,7 +265,8 @@ ana_menu = ReplyKeyboardMarkup(
     [
         ["➕ Sipariş Ekle"],
         ["📦 Açık İşler", "📥 İş Al"],
-        ["🚚 Alınan İşler", "📍 Sipariş Konumu Ekle"],
+        ["🚚 Alınan İşler", "📚 Geçmiş İşler"],
+        ["📍 Sipariş Konumu Ekle"],
         ["🚨 Acil İş", "🔎 Şehre Göre Ara"],
         ["📢 Önemli Talimat", "✅ Talimat Tamamlandı"],
         ["✏️ Alınan İş Düzenle", "✏️ Bekleyen İş Düzenle"],
@@ -2136,6 +2137,7 @@ async def siparis_iptal_onayla(
 # =========================================================
 
 SEHIR_ARAMA = 40
+GECMIS_ARAMA = 141
 
 async def sehir_arama_baslat(
     update: Update,
@@ -2275,6 +2277,99 @@ async def sehir_arama_sonuc(
 # =========================================================
 # ALINAN ISLER
 # =========================================================
+
+
+# =========================================================
+# GECMIS ISLER - SADECE OKUMA
+# =========================================================
+async def gecmis_isler_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=("📚 GEÇMİŞ İŞLER\n\n"
+              "Tarih yazın. İsterseniz yanına şehir ekleyin.\n\n"
+              "Örnekler:\n17.10.2026\n17.10.2026 Silifke\n\n"
+              "❌ İşlemden Vazgeç ile çıkabilirsiniz."),
+        reply_markup=islem_iptal_menu,
+    )
+    return GECMIS_ARAMA
+
+
+async def gecmis_isler_sonuc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    girdi = (update.message.text or "").strip()
+    parcalar = girdi.split(maxsplit=1)
+    try:
+        tarih = datetime.strptime(parcalar[0], "%d.%m.%Y").date()
+        if tarih > turkiye_saati().date():
+            raise ValueError()
+    except (ValueError, IndexError):
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="❌ Tarihi GG.AA.YYYY biçiminde yazın. Örnek: 17.10.2026 Silifke",
+        )
+        return GECMIS_ARAMA
+
+    sehir = parcalar[1].strip() if len(parcalar) > 1 else ""
+    baslangic = datetime.combine(tarih, datetime.min.time())
+    bitis = baslangic + timedelta(days=1)
+    # Alınmış veya daha sonra iptal edilmiş siparişleri de içerir.
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT s.id, s.siparis_metni, s.durum, s.alan_personel,
+                       s.alinma_tarihi, s.kargo_ucreti, s.odeme_tipi,
+                       s.iptal_tarihi,
+                       COALESCE((SELECT string_agg(tg.sehir, ', ' ORDER BY tg.id)
+                                 FROM toplu_gonderiler tg WHERE tg.siparis_id=s.id), '')
+                FROM siparisler s
+                WHERE s.alinma_tarihi >= %s AND s.alinma_tarihi < %s
+                  AND (%s = '' OR s.siparis_metni ILIKE %s
+                       OR EXISTS (SELECT 1 FROM toplu_gonderiler tg
+                                  WHERE tg.siparis_id=s.id AND tg.sehir ILIKE %s))
+                ORDER BY s.alinma_tarihi ASC, s.id ASC
+                LIMIT 201
+            """, (baslangic, bitis, sehir, f"%{sehir}%", f"%{sehir}%"))
+            kayitlar = cur.fetchall()
+
+    if not kayitlar:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=(f"📚 {tarih.strftime('%d.%m.%Y')}"
+                  f"{' — ' + sehir if sehir else ''}\n\n"
+                  "Bu tarihte eşleşen alınmış iş kaydı bulunamadı. "
+                  "Bu sonuç, parçanın hiç teslim alınmadığını tek başına kanıtlamaz."),
+            reply_markup=ana_menu,
+        )
+        return ConversationHandler.END
+
+    sinir_var = len(kayitlar) > 200
+    kayitlar = kayitlar[:200]
+    baslik = (f"📚 GEÇMİŞ İŞLER — {tarih.strftime('%d.%m.%Y')}"
+              f"{' — ' + sehir if sehir else ''}\n"
+              f"Gösterilen kayıt: {len(kayitlar)}"
+              + (" (ilk 200; şehirle daraltın)" if sinir_var else "") + "\n\n")
+    parca = baslik
+    for sid, metin, durum, personel, alinma, ucret, odeme, iptal, sehirler in kayitlar:
+        durum_yazi = "İPTAL" if durum == "IPTAL" or iptal else durum
+        satir = (f"🆔 #{sid} — {durum_yazi}\n"
+                 f"📦 {metin}\n"
+                 + (f"🏙️ {sehirler}\n" if sehirler else "")
+                 + f"👤 {personel or '-'}\n"
+                 + f"🕐 {alinma.strftime('%H:%M') if alinma else '-'}\n"
+                 + f"💳 {odeme or '-'}"
+                 + (f" | {abs(float(ucret)):,.2f} ₺" if ucret is not None else "")
+                 + "\n────────────\n")
+        if len(parca) + len(satir) > 3800:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=parca)
+            parca = ""
+        # Telegram tek mesaj limiti için uzun açıklamaları böl.
+        while len(satir) > 3800:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=satir[:3800])
+            satir = satir[3800:]
+        parca += satir
+    if parca:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=parca, reply_markup=ana_menu)
+    return ConversationHandler.END
+
 
 async def alinan_isler(
     update: Update,
@@ -3415,6 +3510,16 @@ def main():
             acik_isler
         )
     )
+
+    application.add_handler(ConversationHandler(
+        per_chat=True, per_user=True,
+        entry_points=[MessageHandler(filters.Regex("^📚 Geçmiş İşler$"), gecmis_isler_baslat)],
+        states={GECMIS_ARAMA: [MessageHandler(
+            filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+            gecmis_isler_sonuc)]},
+        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal),
+                   CommandHandler("iptal", iptal)],
+    ))
 
     application.add_handler(
         MessageHandler(
