@@ -997,6 +997,74 @@ async def acil_islem_yap(
 
 
 
+# İş Al akışındaki tek kontrol mesajını güncelle.
+async def is_al_ekran(update, context, metin, butonlar=None):
+    kayit = context.user_data.get("is_al_ekran")
+    if kayit:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=kayit[0], message_id=kayit[1], text=metin,
+                reply_markup=butonlar)
+            return
+        except Exception as hata:
+            # Eski/silinmiş kontrol mesajı durumunda yeni ekran oluştur.
+            if "Message is not modified" in str(hata):
+                return
+    yeni = await context.bot.send_message(
+        chat_id=update.effective_chat.id, text=metin, reply_markup=butonlar)
+    context.user_data["is_al_ekran"] = (yeni.chat_id, yeni.message_id)
+
+
+def is_al_tipi_butonlari():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📦 Tek Gönderi", callback_data="ial:tek"),
+         InlineKeyboardButton("📦 Toplu Gönderi", callback_data="ial:toplu")],
+        [InlineKeyboardButton("❌ Vazgeç", callback_data="ial:iptal")],
+    ])
+
+
+async def is_al_tipi_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    kayit = context.user_data.get("is_al_ekran")
+    if not kayit or (query.message.chat_id, query.message.message_id) != tuple(kayit):
+        return GONDERI_TIPI
+    if query.data == "ial:iptal":
+        await is_al_ekran(update, context, "❌ İş alma işlemi iptal edildi.")
+        context.user_data.clear()
+        return ConversationHandler.END
+    if query.data == "ial:tek":
+        await is_al_ekran(update, context,
+            "💰 Kargo ücretini yazınız.\n\n💵 Nakit: pozitif tutar\n"
+            "📒 Vadeli / cari: eksi tutar\n\n"
+            "📲 Karşı ödemeli için aşağıdaki butona basın.",
+            InlineKeyboardMarkup([[InlineKeyboardButton(
+                "📲 Karşı Ödemeli", callback_data="ial:karsi")],
+                [InlineKeyboardButton("❌ Vazgeç", callback_data="ial:iptal")]]))
+        return KARGO_UCRETI
+    if query.data == "ial:toplu":
+        await is_al_ekran(update, context,
+            "📦 TOPLU GÖNDERİ\n\nŞehir ve ücretleri alt alta yazınız.\n"
+            "Her satırda önce şehir, sonra tutar olmalıdır.\n\n"
+            "💵 Nakit: pozitif tutar\n📒 Vadeli / cari: eksi tutar")
+        return TOPLU_GONDERILER
+    return GONDERI_TIPI
+
+
+async def is_al_karsi_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    kayit = context.user_data.get("is_al_ekran")
+    if not kayit or (query.message.chat_id, query.message.message_id) != tuple(kayit):
+        return KARGO_UCRETI
+    if query.data == "ial:iptal":
+        await is_al_ekran(update, context, "❌ İş alma işlemi iptal edildi.")
+        context.user_data.clear()
+        return ConversationHandler.END
+    await is_al_ekran(update, context, "📲 KARŞI ÖDEMELİ\n\n💰 Kargo ücretini yazınız.")
+    return KARSI_ODEME_TUTAR
+
+
 # =========================================================
 # IS AL
 # =========================================================
@@ -1007,7 +1075,7 @@ async def is_al_baslat(
 ):
     context.user_data.clear()
 
-    await update.message.reply_text(
+    await is_al_ekran(update, context, 
         "📥 ALINACAK İŞ\n\n"
         "Aldığınız siparişin 🆔 numarasını yazınız.\n\n"
         
@@ -1024,7 +1092,7 @@ async def is_id_al(
         siparis_id = int(update.message.text.strip())
 
     except ValueError:
-        await update.message.reply_text(
+        await is_al_ekran(update, context, 
             "❌ Geçerli bir sipariş numarası yazınız.\n"
             
         )
@@ -1033,11 +1101,11 @@ async def is_id_al(
     siparis = acik_siparis_getir(siparis_id)
 
     if not siparis:
-        await update.message.reply_text(
+        await is_al_ekran(update, context, 
             "❌ Bu numarada açık bir iş bulunamadı.\n\n"
             "Sipariş alınmış, iptal edilmiş veya "
             "numara yanlış olabilir.",
-            reply_markup=ana_menu
+            butonlar=None
         )
 
         context.user_data.clear()
@@ -1047,12 +1115,12 @@ async def is_id_al(
     context.user_data["siparis_id"] = siparis_id
     _, siparis_metni, _ = siparis
 
-    await update.message.reply_text(
+    await is_al_ekran(update, context, 
         "📦 SEÇİLEN İŞ\n\n"
         f"🆔 #{siparis_id}\n"
         f"📦 {siparis_metni}\n\n"
         "Gönderi tipini seçiniz.",
-        reply_markup=gonderi_tipi_menu
+        butonlar=is_al_tipi_butonlari()
     )
 
     return GONDERI_TIPI
@@ -1065,29 +1133,29 @@ async def gonderi_tipi_sec(
     secim = update.message.text.strip()
 
     if secim == "📦 Tek Gönderi":
-        await update.message.reply_text(
+        await is_al_ekran(update, context, 
             "💰 Kargo ücretini yazınız.\n\n"
             "💵 Nakit ise tutarı normal yazın.\n"
             "📒 Vadeli / cari ise tutarı eksi olarak yazın.\n\n"
             "📲 Karşı ödemeli ise aşağıdaki butona basın.",
-            reply_markup=tek_gonderi_odeme_menu
+            butonlar=InlineKeyboardMarkup([[InlineKeyboardButton("📲 Karşı Ödemeli", callback_data="ial:karsi")]])
         )
         return KARGO_UCRETI
 
     if secim == "📦 Toplu Gönderi":
-        await update.message.reply_text(
+        await is_al_ekran(update, context, 
             "📦 TOPLU GÖNDERİ\n\n"
             "Şehir ve ücretleri alt alta yazınız.\n"
             "Her satırda önce şehir, sonra tutar olmalıdır.\n\n"
             "💵 Nakit tutarı normal yazın.\n"
             "📒 Vadeli / cari tutarı eksi olarak yazın.",
-            reply_markup=islem_iptal_menu
+            butonlar=None
         )
         return TOPLU_GONDERILER
 
-    await update.message.reply_text(
+    await is_al_ekran(update, context, 
         "Lütfen gönderi tipini butonlardan seçiniz.",
-        reply_markup=gonderi_tipi_menu
+        butonlar=is_al_tipi_butonlari()
     )
     return GONDERI_TIPI
 
@@ -1104,11 +1172,7 @@ async def kargo_ucreti_al(
         return ConversationHandler.END
 
     if update.message.text.strip() == "📲 Karşı Ödemeli":
-        await update.message.reply_text(
-            "📲 KARŞI ÖDEMELİ\n\n"
-            "💰 Kargo ücretini yazınız.",
-            reply_markup=islem_iptal_menu
-        )
+        await is_al_ekran(update, context, "📲 KARŞI ÖDEMELİ\n\n💰 Kargo ücretini yazınız.")
         return KARSI_ODEME_TUTAR
 
     try:
@@ -1175,6 +1239,7 @@ async def kargo_ucreti_al(
 
     siparis_metni = sonuc[0]
 
+    await is_al_ekran(update, context, f"✅ İş alma tamamlandı — #{siparis_id}")
     await update.message.reply_text(
         "✅ İŞ ALINDI\n\n"
         f"🆔 #{siparis_id}\n"
@@ -1199,18 +1264,18 @@ async def karsi_odeme_tutar_al(
     try:
         tutar = abs(tutar_cevir(update.message.text))
     except ValueError:
-        await update.message.reply_text(
+        await is_al_ekran(update, context, 
             "❌ Kargo ücretini anlayamadım.\n\n"
             "Lütfen sadece tutarı yazınız.",
-            reply_markup=islem_iptal_menu
+            butonlar=None
         )
         return KARSI_ODEME_TUTAR
 
     context.user_data["karsi_odeme_tutar"] = tutar
 
-    await update.message.reply_text(
+    await is_al_ekran(update, context, 
         "📞 Karşı taraftan ödeme alınacak telefon numarasını yazınız.",
-        reply_markup=islem_iptal_menu
+        butonlar=None
     )
 
     return KARSI_ODEME_TELEFON
@@ -1278,6 +1343,8 @@ async def karsi_odeme_telefon_al(
 
     siparis_metni = sonuc[0]
 
+    await is_al_ekran(update, context, f"✅ İş alma tamamlandı — #{siparis_id}")
+    await is_al_ekran(update, context, f"✅ İş alma tamamlandı — #{siparis_id}")
     await update.message.reply_text(
         "✅ İŞ ALINDI\n\n"
         f"🆔 #{siparis_id}\n"
@@ -1441,6 +1508,7 @@ async def toplu_gonderiler_al(
         f"💰 Genel Toplam: {nakit_toplam + vadeli_toplam:,.2f} ₺"
     )
 
+    await is_al_ekran(update, context, f"✅ Toplu iş alma tamamlandı — #{siparis_id}")
     context.user_data.clear()
 
     await update.message.reply_text(
@@ -3356,6 +3424,7 @@ def main():
 
 
             GONDERI_TIPI: [
+                CallbackQueryHandler(is_al_tipi_callback, pattern=r"^ial:(tek|toplu|iptal)$"),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     gonderi_tipi_sec
@@ -3363,6 +3432,7 @@ def main():
             ],
 
             KARGO_UCRETI: [
+                CallbackQueryHandler(is_al_karsi_callback, pattern=r"^ial:(karsi|iptal)$"),
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     kargo_ucreti_al
