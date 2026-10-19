@@ -223,6 +223,45 @@ def veritabani_hazirla():
 
 veritabani_hazirla()
 
+# Telegram'a özel numaralar: gerçek veritabanı ID'si asla değiştirilmez.
+def telegram_numara_hazirla():
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("CREATE TABLE IF NOT EXISTS telegram_numara_ayari (id INTEGER PRIMARY KEY, baslangic_id BIGINT NOT NULL)")
+            cur.execute("INSERT INTO telegram_numara_ayari (id, baslangic_id) SELECT 1, COALESCE(MAX(id), 0) FROM siparisler ON CONFLICT (id) DO NOTHING")
+            cur.execute("SELECT baslangic_id FROM telegram_numara_ayari WHERE id=1")
+            result = cur.fetchone()[0]
+        conn.commit()
+    return result
+
+TELEGRAM_NUMARA_BASLANGIC = telegram_numara_hazirla()
+
+def gorunen_no(gercek_id):
+    if gercek_id is None:
+        return '-'
+    return (gercek_id - TELEGRAM_NUMARA_BASLANGIC - 1) % 999 + 1 if gercek_id > TELEGRAM_NUMARA_BASLANGIC else gercek_id
+
+def siparis_no_coz(numara, durum=None, odeme=None):
+    # 1-999 aralığında eski ve yeni aynı numaraya denk gelirse tahmin etme.
+    if numara <= 0:
+        raise ValueError('Geçersiz numara')
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            kosullar = ['(id = %s OR (id > %s AND MOD(id - %s - 1, 999) + 1 = %s))']
+            params = [numara, TELEGRAM_NUMARA_BASLANGIC, TELEGRAM_NUMARA_BASLANGIC, numara]
+            if durum:
+                kosullar.append('durum = %s'); params.append(durum)
+            if odeme == 'bekleyen':
+                kosullar.append("odeme_tipi='KARŞI ÖDEMELİ' AND COALESCE(tahsilat_durumu, 'BEKLİYOR')='BEKLİYOR'")
+            elif odeme == 'tahsil':
+                kosullar.append("tahsilat_durumu='TAHSİL EDİLDİ'")
+            cur.execute('SELECT id FROM siparisler WHERE ' + ' AND '.join(kosullar) + ' ORDER BY id DESC LIMIT 3', params)
+            eslesenler = [r[0] for r in cur.fetchall()]
+    if len(eslesenler) > 1:
+        raise ValueError('Bu numara birden fazla siparişle eşleşiyor. Gerçek ID veya dönem bilgisiyle yetkiliye başvurun.')
+    return eslesenler[0] if eslesenler else numara
+
+
 
 # =========================================================
 # DURUMLAR
@@ -742,7 +781,7 @@ async def siparis_kaydet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             siparis_id = cur.fetchone()[0]
         conn.commit()
     await update.message.reply_text(
-        f"✅ SİPARİŞ EKLENDİ\n\n🆔 #{siparis_id}\n📦 {siparis_metni}",
+        f"✅ SİPARİŞ EKLENDİ\n\n🆔 #{gorunen_no(siparis_id)}\n📦 {siparis_metni}",
         reply_markup=ana_menu)
     context.user_data.clear()
     return ConversationHandler.END
@@ -759,6 +798,7 @@ async def konum_sonradan_baslat(update: Update, context: ContextTypes.DEFAULT_TY
 async def konum_sonradan_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         sid = int(update.message.text.strip().lstrip('#'))
+        sid = siparis_no_coz(sid, durum='ACIK')
         if sid <= 0:
             raise ValueError()
     except ValueError:
@@ -773,7 +813,7 @@ async def konum_sonradan_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return KONUM_SIPARIS_ID
     context.user_data['konum_siparis_id'] = sid
     await update.message.reply_text(
-        f"📦 #{sid} — {kayit[0]}\n\n"
+        f"📦 #{gorunen_no(sid)} — {kayit[0]}\n\n"
         "WhatsApp'taki konumu Google Haritalar'da açıp bağlantısını buraya yapıştırın. "
         "Telegram konumu da gönderebilirsiniz.",
         reply_markup=islem_iptal_menu)
@@ -806,7 +846,7 @@ async def konum_sonradan_kaydet(update: Update, context: ContextTypes.DEFAULT_TY
     if not sonuc:
         await update.message.reply_text("❌ Sipariş artık açık değil. Konum eklenmedi.", reply_markup=ana_menu)
     else:
-        await update.message.reply_text(f"✅ #{sid} siparişine konum eklendi.\n📍 {link}", reply_markup=ana_menu)
+        await update.message.reply_text(f"✅ #{gorunen_no(sid)} siparişine konum eklendi.\n📍 {link}", reply_markup=ana_menu)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -849,12 +889,12 @@ async def acik_isler(
         if acil:
             mesaj += (
                 "🚨🚨 ACİL — ÖNCELİKLİ ALIN 🚨🚨\n"
-                f"🆔 #{siparis_id}\n"
+                f"🆔 #{gorunen_no(siparis_id)}\n"
                 f"📦 {siparis_metni}\n"
             )
         else:
             mesaj += (
-                f"🆔 #{siparis_id}\n"
+                f"🆔 #{gorunen_no(siparis_id)}\n"
                 f"📦 {siparis_metni}\n"
             )
         if konum_linki:
@@ -893,6 +933,7 @@ async def acil_id_al(
 ):
     try:
         siparis_id = int(update.message.text.strip())
+        siparis_id = siparis_no_coz(siparis_id, durum='ACIK')
     except ValueError:
         await update.message.reply_text(
             "❌ Geçerli bir sipariş ID numarası yazınız.",
@@ -925,7 +966,7 @@ async def acil_id_al(
     durum_metni = "🚨 Şu anda ACİL" if acil else "📦 Şu anda NORMAL"
 
     await update.message.reply_text(
-        f"🆔 #{siparis_id}\n"
+        f"🆔 #{gorunen_no(siparis_id)}\n"
         f"📦 {siparis_metni}\n\n"
         f"{durum_metni}\n\n"
         "Yapmak istediğiniz işlemi seçiniz:",
@@ -976,14 +1017,14 @@ async def acil_islem_yap(
     if yeni_acil:
         mesaj = (
             "🚨 SİPARİŞ ACİL YAPILDI\n\n"
-            f"🆔 #{siparis_id}\n"
+            f"🆔 #{gorunen_no(siparis_id)}\n"
             f"📦 {siparis_metni}\n\n"
             "Bu sipariş Açık İşler listesinin en üstünde görünecek."
         )
     else:
         mesaj = (
             "✅ ACİL DURUMU KALDIRILDI\n\n"
-            f"🆔 #{siparis_id}\n"
+            f"🆔 #{gorunen_no(siparis_id)}\n"
             f"📦 {siparis_metni}"
         )
 
@@ -1090,6 +1131,7 @@ async def is_id_al(
 ):
     try:
         siparis_id = int(update.message.text.strip())
+        siparis_id = siparis_no_coz(siparis_id, durum='ACIK')
 
     except ValueError:
         await is_al_ekran(update, context, 
@@ -1117,7 +1159,7 @@ async def is_id_al(
 
     await is_al_ekran(update, context, 
         "📦 SEÇİLEN İŞ\n\n"
-        f"🆔 #{siparis_id}\n"
+        f"🆔 #{gorunen_no(siparis_id)}\n"
         f"📦 {siparis_metni}\n\n"
         "Gönderi tipini seçiniz.",
         butonlar=is_al_tipi_butonlari()
@@ -1239,10 +1281,10 @@ async def kargo_ucreti_al(
 
     siparis_metni = sonuc[0]
 
-    await is_al_ekran(update, context, f"✅ İş alma tamamlandı — #{siparis_id}")
+    await is_al_ekran(update, context, f"✅ İş alma tamamlandı — #{gorunen_no(siparis_id)}")
     await update.message.reply_text(
         "✅ İŞ ALINDI\n\n"
-        f"🆔 #{siparis_id}\n"
+        f"🆔 #{gorunen_no(siparis_id)}\n"
         f"📦 {siparis_metni}\n"
         f"👤 Alan: {personel}\n"
         f"💳 Ödeme Tipi: {odeme_tipi}\n"
@@ -1343,11 +1385,11 @@ async def karsi_odeme_telefon_al(
 
     siparis_metni = sonuc[0]
 
-    await is_al_ekran(update, context, f"✅ İş alma tamamlandı — #{siparis_id}")
-    await is_al_ekran(update, context, f"✅ İş alma tamamlandı — #{siparis_id}")
+    await is_al_ekran(update, context, f"✅ İş alma tamamlandı — #{gorunen_no(siparis_id)}")
+    await is_al_ekran(update, context, f"✅ İş alma tamamlandı — #{gorunen_no(siparis_id)}")
     await update.message.reply_text(
         "✅ İŞ ALINDI\n\n"
-        f"🆔 #{siparis_id}\n"
+        f"🆔 #{gorunen_no(siparis_id)}\n"
         f"📦 {siparis_metni}\n"
         f"👤 Alan: {personel}\n"
         "💳 Ödeme Tipi: KARŞI ÖDEMELİ\n"
@@ -1491,7 +1533,7 @@ async def toplu_gonderiler_al(
 
     mesaj = (
         "✅ TOPLU İŞ ALINDI\n\n"
-        f"🆔 #{siparis_id}\n"
+        f"🆔 #{gorunen_no(siparis_id)}\n"
         f"📦 {siparis_metni}\n"
         f"👤 Alan: {personel}\n\n"
     )
@@ -1508,7 +1550,7 @@ async def toplu_gonderiler_al(
         f"💰 Genel Toplam: {nakit_toplam + vadeli_toplam:,.2f} ₺"
     )
 
-    await is_al_ekran(update, context, f"✅ Toplu iş alma tamamlandı — #{siparis_id}")
+    await is_al_ekran(update, context, f"✅ Toplu iş alma tamamlandı — #{gorunen_no(siparis_id)}")
     context.user_data.clear()
 
     await update.message.reply_text(
@@ -1563,7 +1605,7 @@ async def karsi_odemeliler_baslat(
         alinma_tarihi
     ) in kayitlar:
         mesaj += (
-            f"🆔 #{siparis_id}\n"
+            f"🆔 #{gorunen_no(siparis_id)}\n"
             f"📦 {siparis_metni}\n"
             f"💰 {abs(float(kargo_ucreti or 0)):,.2f} ₺\n"
             f"📞 {telefon or '-'}\n"
@@ -1592,6 +1634,7 @@ async def tahsilat_id_al(
 ):
     try:
         siparis_id = int(update.message.text.strip())
+        siparis_id = siparis_no_coz(siparis_id, durum='ALINDI', odeme='bekleyen')
     except ValueError:
         await update.message.reply_text(
             "❌ Geçerli bir sipariş ID numarası yazınız.",
@@ -1629,7 +1672,7 @@ async def tahsilat_id_al(
 
     await update.message.reply_text(
         "📲 TAHSİLAT ONAYI\n\n"
-        f"🆔 #{siparis_id}\n"
+        f"🆔 #{gorunen_no(siparis_id)}\n"
         f"📦 {siparis_metni}\n"
         f"💰 {abs(float(tutar or 0)):,.2f} ₺\n"
         f"📞 {telefon or '-'}\n\n"
@@ -1782,7 +1825,7 @@ async def tahsilat_iban_sec(
 
     await update.message.reply_text(
         "✅ TAHSİLAT TAMAMLANDI\n\n"
-        f"🆔 #{siparis_id}\n"
+        f"🆔 #{gorunen_no(siparis_id)}\n"
         f"📦 {siparis_metni}\n"
         f"💰 {abs(float(tutar or 0)):,.2f} ₺\n"
         f"📞 {telefon or '-'}\n"
@@ -1847,7 +1890,7 @@ async def tahsilat_gecmis_baslat(
         tahsil_eden
     ) in kayitlar:
         mesaj += (
-            f"🆔 #{siparis_id}\n"
+            f"🆔 #{gorunen_no(siparis_id)}\n"
             f"📦 {siparis_metni}\n"
             f"💰 {abs(float(tutar or 0)):,.2f} ₺\n"
             f"🏦 IBAN: {iban or '-'}\n"
@@ -1880,6 +1923,7 @@ async def tahsilat_gecmis_id_al(
 ):
     try:
         siparis_id = int(update.message.text.strip())
+        siparis_id = siparis_no_coz(siparis_id, durum='ALINDI', odeme='tahsil')
     except ValueError:
         await update.message.reply_text(
             "❌ Geçerli bir sipariş ID numarası yazınız.",
@@ -1929,7 +1973,7 @@ async def tahsilat_gecmis_id_al(
 
     bilgi = (
         "✅ TAHSİL EDİLMİŞ KARŞI ÖDEME\n\n"
-        f"🆔 #{siparis_id}\n"
+        f"🆔 #{gorunen_no(siparis_id)}\n"
         f"📦 {siparis_metni}\n"
         f"💰 {abs(float(tutar or 0)):,.2f} ₺\n"
         f"📞 {telefon or '-'}\n"
@@ -1949,12 +1993,12 @@ async def tahsilat_gecmis_id_al(
             if dekont_tipi == "PDF":
                 await update.message.reply_document(
                     document=dekont_file_id,
-                    caption=f"🧾 #{siparis_id} dekontu"
+                    caption=f"🧾 #{gorunen_no(siparis_id)} dekontu"
                 )
             else:
                 await update.message.reply_photo(
                     photo=dekont_file_id,
-                    caption=f"🧾 #{siparis_id} dekontu"
+                    caption=f"🧾 #{gorunen_no(siparis_id)} dekontu"
                 )
         except Exception:
             await update.message.reply_text(
@@ -2002,6 +2046,7 @@ async def siparis_iptal_id_al(
 ):
     try:
         siparis_id = int(update.message.text.strip())
+        siparis_id = siparis_no_coz(siparis_id, durum='ACIK')
 
     except ValueError:
         await update.message.reply_text(
@@ -2030,7 +2075,7 @@ async def siparis_iptal_id_al(
 
     await update.message.reply_text(
         "📦 BEKLEYEN SİPARİŞ\n\n"
-        f"🆔 #{siparis_id}\n"
+        f"🆔 #{gorunen_no(siparis_id)}\n"
         f"📦 {siparis_metni}\n\n"
         "Yapmak istediğiniz işlemi seçiniz:",
         reply_markup=bekleyen_islem_menu
@@ -2055,7 +2100,7 @@ async def bekleyen_islem_sec(update: Update, context: ContextTypes.DEFAULT_TYPE)
             context.user_data.clear()
             return ConversationHandler.END
         await update.message.reply_text(
-            f"⚠️ İPTAL ONAYI\n\n🆔 #{sid}\n📦 {row[0]}\n\n"
+            f"⚠️ İPTAL ONAYI\n\n🆔 #{gorunen_no(sid)}\n📦 {row[0]}\n\n"
             "Bu bekleyen siparişi iptal etmek istediğinize emin misiniz?",
             reply_markup=iptal_onay_menu)
         return IPTAL_ONAY
@@ -2085,7 +2130,7 @@ async def bekleyen_yeni_metin_al(update: Update, context: ContextTypes.DEFAULT_T
         return ConversationHandler.END
     context.user_data["bekleyen_yeni_metin"] = yeni
     await update.message.reply_text(
-        f"📝 DEĞİŞİKLİK ONAYI\n\n🆔 #{sid}\n\n"
+        f"📝 DEĞİŞİKLİK ONAYI\n\n🆔 #{gorunen_no(sid)}\n\n"
         f"Eski bilgi:\n{row[0]}\n\nYeni bilgi:\n{yeni}\n\n"
         "Değişikliği kaydetmek istiyor musunuz?",
         reply_markup=bekleyen_kaydet_menu)
@@ -2118,7 +2163,7 @@ async def bekleyen_duzenle_kaydet(update: Update, context: ContextTypes.DEFAULT_
             reply_markup=ana_menu)
     else:
         await update.message.reply_text(
-            f"✅ BEKLEYEN İŞ DÜZENLENDİ\n\n🆔 #{sid}\n"
+            f"✅ BEKLEYEN İŞ DÜZENLENDİ\n\n🆔 #{gorunen_no(sid)}\n"
             f"📦 {sonuc[0]}\n👤 Düzenleyen: {personel}",
             reply_markup=ana_menu)
     return ConversationHandler.END
@@ -2191,7 +2236,7 @@ async def siparis_iptal_onayla(
 
     await update.message.reply_text(
         "🗑 SİPARİŞ İPTAL EDİLDİ\n\n"
-        f"🆔 #{siparis_id}\n"
+        f"🆔 #{gorunen_no(siparis_id)}\n"
         f"📦 {siparis_metni}\n\n"
         "Sipariş Açık İşler listesinden çıkarıldı.",
         reply_markup=ana_menu
@@ -2304,7 +2349,7 @@ async def sehir_arama_sonuc(
         toplam_ucret += tutar
         saat = alinma.strftime('%H:%M') if alinma else '-'
         mesaj += (
-            f"🆔 #{sid}\n"
+            f"🆔 #{gorunen_no(sid)}\n"
             f"👤 {personel or '-'}\n"
             f"📦 {metin}\n"
             f"💳 {odeme or '-'}\n"
@@ -2319,7 +2364,7 @@ async def sehir_arama_sonuc(
         toplam_ucret += tutar
         saat = alinma.strftime('%H:%M') if alinma else '-'
         mesaj += (
-            f"🆔 #{sid}\n"
+            f"🆔 #{gorunen_no(sid)}\n"
             f"👤 {personel or '-'}\n"
             f"📦 {metin}\n"
             f"📍 {bulunan_sehir}\n"
@@ -2525,7 +2570,7 @@ async def gecmis_kayitlarini_goster(context, chat_id, baslangic, bitis, etiket, 
     parca = baslik
     for sid, metin, durum, personel, alinma, ucret, odeme, iptal, sehirler in kayitlar:
         durum_yazi = "İPTAL" if durum == "IPTAL" or iptal else durum
-        satir = (f"🆔 #{sid} — {durum_yazi}\n"
+        satir = (f"🆔 #{gorunen_no(sid)} — {durum_yazi}\n"
                  f"📦 {metin}\n"
                  + (f"🏙️ {sehirler}\n" if sehirler else "")
                  + f"👤 {personel or '-'}\n"
@@ -2616,7 +2661,7 @@ async def alinan_isler(
                 karsi_odeme_toplam += ucret
 
         mesaj += (
-            f"🆔 #{siparis_id}\n"
+            f"🆔 #{gorunen_no(siparis_id)}\n"
             f"📦 {siparis_metni}\n"
             f"👤 {personel or '-'}\n"
         )
@@ -2744,6 +2789,7 @@ async def duzenle_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def duzenle_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         sid = int(update.message.text.strip())
+        sid = siparis_no_coz(sid, durum='ALINDI')
         if sid <= 0: raise ValueError
     except ValueError:
         await update.message.reply_text("❌ Geçerli bir sipariş ID yazınız.")
@@ -2763,7 +2809,7 @@ async def duzenle_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if altlar:
         alt_metin = "\n" + "\n".join(f"📍 {r[1]} — {abs(r[2]):,.2f} ₺ ({r[3]})" for r in altlar)
     await update.message.reply_text(
-        f"✏️ İŞ #{sid}\n📦 {row[1]}\n💳 {row[4]}\n💰 {abs(row[3] or 0):,.2f} ₺"
+        f"✏️ İŞ #{gorunen_no(sid)}\n📦 {row[1]}\n💳 {row[4]}\n💰 {abs(row[3] or 0):,.2f} ₺"
         f"\n📞 {row[5] or '-'}{alt_metin}\n\nNeyi değiştirmek istiyorsunuz?",
         reply_markup=duzenle_menu)
     return DUZENLE_SECIM
@@ -2811,7 +2857,7 @@ async def duzenle_sec(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if islem == "iptal":
         await update.message.reply_text(
             "⚠️ ALINAN İŞ İPTALİ\n\n"
-            f"🆔 #{sid}\n📦 {row[1]}\n"
+            f"🆔 #{gorunen_no(sid)}\n📦 {row[1]}\n"
             f"💰 İptal edilecek kargo ücreti: {abs(row[3] or 0):,.2f} ₺\n\n"
             "Sipariş Alınan İşler listesinden çıkacak ve kargo ücreti "
             "hesaplamalardan düşecek. İşlem geçmişi korunacak.\n\n"
@@ -2974,9 +3020,9 @@ async def duzenle_onay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     context.user_data.clear()
     await update.message.reply_text(
-        (f"🗑️ İŞ #{sid} İPTAL EDİLDİ\n👤 İptal eden: {personel}\n"
+        (f"🗑️ İŞ #{gorunen_no(sid)} İPTAL EDİLDİ\n👤 İptal eden: {personel}\n"
          if islem == "iptal" else
-         f"✅ İŞ #{sid} GÜNCELLENDİ\n👤 Düzenleyen: {personel}\n")
+         f"✅ İŞ #{gorunen_no(sid)} GÜNCELLENDİ\n👤 Düzenleyen: {personel}\n")
         + ("↩️ İş yeniden Açık İşler'e alındı.\n" if islem == "geri" else "")
         + ("💰 Kargo ücreti iptal edildi.\n" if islem == "iptal" else "")
         + "🕐 Değişiklik geçmişe kaydedildi.", reply_markup=ana_menu)
