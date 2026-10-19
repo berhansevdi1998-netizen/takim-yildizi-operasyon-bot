@@ -2789,8 +2789,26 @@ async def duzenle_baslat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def duzenle_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         sid = int(update.message.text.strip())
-        sid = siparis_no_coz(sid, durum='ALINDI')
+        # Alınan İş Düzenle: yeni dönemin Telegram numarasını öncelikle çöz.
+        # Eski dönemin aynı numaralı işi, yeni dönemle karıştırılmamalıdır.
         if sid <= 0: raise ValueError
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT id FROM siparisler
+                    WHERE id > %s AND MOD(id - %s - 1, 999) + 1 = %s
+                      AND durum = 'ALINDI'
+                    ORDER BY id DESC LIMIT 2""",
+                    (TELEGRAM_NUMARA_BASLANGIC, TELEGRAM_NUMARA_BASLANGIC, sid))
+                adaylar = [r[0] for r in cur.fetchall()]
+        if len(adaylar) > 1:
+            await update.message.reply_text("❌ Bu sipariş numarası birden fazla yeni dönemle eşleşiyor. Yetkiliye başvurun.")
+            return DUZENLE_ID
+        if adaylar:
+            sid = adaylar[0]
+        else:
+            # Yeni dönemde eşleşme yoksa eski kayıtları otomatik seçme.
+            await update.message.reply_text("❌ Yeni dönemde bu numarayla alınmış iş bulunamadı.")
+            return DUZENLE_ID
     except ValueError:
         await update.message.reply_text("❌ Geçerli bir sipariş ID yazınız.")
         return DUZENLE_ID
