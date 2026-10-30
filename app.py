@@ -3067,6 +3067,12 @@ async def iptal(
     return ConversationHandler.END
 
 
+async def acik_isler_ve_bitir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Aktif işlemi bitirerek açık işleri göster."""
+    context.user_data.clear()
+    await acik_isler(update, context)
+    return ConversationHandler.END
+
 # =========================================================
 # MAIN
 # =========================================================
@@ -3446,7 +3452,7 @@ def main():
         states={
             SIPARIS_METNI: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     siparis_kaydet
                 )
             ],
@@ -3457,17 +3463,17 @@ def main():
                 filters.Regex("^❌ İşlemden Vazgeç$"),
                 iptal
             ),
-            CommandHandler("iptal", iptal)
+            CommandHandler("iptal", iptal), MessageHandler(filters.Regex("^📦 Açık İşler$"), acik_isler_ve_bitir)
         ],
     )
 
     konum_conversation = ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[MessageHandler(filters.Regex("^📍 Sipariş Konumu Ekle$"), konum_sonradan_baslat)],
         states={
-            KONUM_SIPARIS_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), konum_sonradan_id)],
+            KONUM_SIPARIS_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"), konum_sonradan_id)],
             KONUM_SIPARIS_GIR: [MessageHandler((filters.TEXT | filters.LOCATION) & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), konum_sonradan_kaydet)],
         },
-        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
+        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal), MessageHandler(filters.Regex("^📦 Açık İşler$"), acik_isler_ve_bitir)],
     )
 
     is_al_conversation = ConversationHandler(per_chat=True, per_user=True, 
@@ -3481,7 +3487,7 @@ def main():
         states={
             IS_ID: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     is_id_al
                 )
             ],
@@ -3490,7 +3496,7 @@ def main():
             GONDERI_TIPI: [
                 CallbackQueryHandler(is_al_tipi_callback, pattern=r"^ial:(tek|toplu|iptal)$"),
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     gonderi_tipi_sec
                 )
             ],
@@ -3498,28 +3504,28 @@ def main():
             KARGO_UCRETI: [
                 CallbackQueryHandler(is_al_karsi_callback, pattern=r"^ial:(karsi|iptal)$"),
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     kargo_ucreti_al
                 )
             ],
 
             KARSI_ODEME_TUTAR: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     karsi_odeme_tutar_al
                 )
             ],
 
             KARSI_ODEME_TELEFON: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     karsi_odeme_telefon_al
                 )
             ],
 
             TOPLU_GONDERILER: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     toplu_gonderiler_al
                 )
             ],
@@ -3530,7 +3536,7 @@ def main():
                 filters.Regex("^❌ İşlemden Vazgeç$"),
                 iptal
             ),
-            CommandHandler("iptal", iptal)
+            CommandHandler("iptal", iptal), MessageHandler(filters.Regex("^📦 Açık İşler$"), acik_isler_ve_bitir)
         ],
     )
 
@@ -3545,14 +3551,14 @@ def main():
         states={
             TAHSILAT_ID: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     tahsilat_id_al
                 )
             ],
 
             TAHSILAT_ONAY: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     tahsilat_onayla
                 )
             ],
@@ -3567,7 +3573,7 @@ def main():
 
             TAHSILAT_IBAN: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     tahsilat_iban_sec
                 )
             ],
@@ -3578,7 +3584,7 @@ def main():
                 filters.Regex("^❌ İşlemden Vazgeç$"),
                 iptal
             ),
-            CommandHandler("iptal", iptal)
+            CommandHandler("iptal", iptal), MessageHandler(filters.Regex("^📦 Açık İşler$"), acik_isler_ve_bitir)
         ],
     )
 
@@ -3593,7 +3599,7 @@ def main():
         states={
             TAHSILAT_GECMIS_ID: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     tahsilat_gecmis_id_al
                 )
             ],
@@ -3604,7 +3610,7 @@ def main():
                 filters.Regex("^❌ İşlemden Vazgeç$"),
                 iptal
             ),
-            CommandHandler("iptal", iptal)
+            CommandHandler("iptal", iptal), MessageHandler(filters.Regex("^📦 Açık İşler$"), acik_isler_ve_bitir)
         ],
     )
 
@@ -3618,24 +3624,24 @@ def main():
 
         states={
             BEKLEYEN_SECIM: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, bekleyen_islem_sec)
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"), bekleyen_islem_sec)
             ],
             BEKLEYEN_YENI_METIN: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, bekleyen_yeni_metin_al)
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"), bekleyen_yeni_metin_al)
             ],
             BEKLEYEN_DUZENLE_ONAY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, bekleyen_duzenle_kaydet)
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"), bekleyen_duzenle_kaydet)
             ],
             IPTAL_ID: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     siparis_iptal_id_al
                 )
             ],
 
             IPTAL_ONAY: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     siparis_iptal_onayla
                 )
             ],
@@ -3646,7 +3652,7 @@ def main():
                 filters.Regex("^❌ İşlemden Vazgeç$"),
                 iptal
             ),
-            CommandHandler("iptal", iptal)
+            CommandHandler("iptal", iptal), MessageHandler(filters.Regex("^📦 Açık İşler$"), acik_isler_ve_bitir)
         ],
     )
 
@@ -3660,13 +3666,13 @@ def main():
         states={
             ACIL_ID: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     acil_id_al
                 )
             ],
             ACIL_ISLEM: [
                 MessageHandler(
-                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"),
+                    filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"),
                     acil_islem_yap
                 )
             ],
@@ -3676,19 +3682,19 @@ def main():
                 filters.Regex("^❌ İşlemden Vazgeç$"),
                 iptal
             ),
-            CommandHandler("iptal", iptal)
+            CommandHandler("iptal", iptal), MessageHandler(filters.Regex("^📦 Açık İşler$"), acik_isler_ve_bitir)
         ],
     )
 
     duzenle_conversation = ConversationHandler(per_chat=True, per_user=True, 
         entry_points=[MessageHandler(filters.Regex("^✏️ Alınan İş Düzenle$"), duzenle_baslat)],
         states={
-            DUZENLE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_id)],
-            DUZENLE_SECIM: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_sec)],
-            DUZENLE_DEGER: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_deger)],
-            DUZENLE_ONAY: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_onay)],
+            DUZENLE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_id)],
+            DUZENLE_SECIM: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_sec)],
+            DUZENLE_DEGER: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_deger)],
+            DUZENLE_ONAY: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"), duzenle_onay)],
         },
-        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
+        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal), MessageHandler(filters.Regex("^📦 Açık İşler$"), acik_isler_ve_bitir)],
     )
 
     application.add_handler(MessageHandler(filters.Regex("^🟢 Mesaiye Başla$"), mesai_baslat))
@@ -3730,8 +3736,8 @@ def main():
 
     application.add_handler(ConversationHandler(per_chat=True, per_user=True,
         entry_points=[MessageHandler(filters.Regex("^📢 Önemli Talimat$"), onemli_talimat_baslat)],
-        states={ONEMLI_TALIMAT_MESAJ: [MessageHandler((filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$")) | filters.VOICE | filters.AUDIO, onemli_talimat_mesaj_al)]},
-        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
+        states={ONEMLI_TALIMAT_MESAJ: [MessageHandler((filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$")) | filters.VOICE | filters.AUDIO, onemli_talimat_mesaj_al)]},
+        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal), MessageHandler(filters.Regex("^📦 Açık İşler$"), acik_isler_ve_bitir)],
     ))
     application.add_handler(MessageHandler(filters.Regex("^✅ Talimat Tamamlandı$"), onemli_talimat_kapat))
 
@@ -3739,10 +3745,10 @@ def main():
         entry_points=[MessageHandler(filters.Regex("^🔎 Şehre Göre Ara$"), sehir_arama_baslat)],
         states={
             SEHIR_ARAMA: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), sehir_arama_sonuc)
+                MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"), sehir_arama_sonuc)
             ]
         },
-        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal)],
+        fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal), CommandHandler("iptal", iptal), MessageHandler(filters.Regex("^📦 Açık İşler$"), acik_isler_ve_bitir)],
     ))
 
     application.add_handler(
@@ -3758,9 +3764,9 @@ def main():
         states={GECMIS_ARAMA: [
             CallbackQueryHandler(gecmis_isler_secim, pattern=r"^gh:(all|city)$"),
             CallbackQueryHandler(gecmis_isler_callback, pattern=r"^gh:"),
-            MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^❌ İşlemden Vazgeç$"), gecmis_isler_sonuc)]},
+            MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex("^📦 Açık İşler$") & ~filters.Regex("^❌ İşlemden Vazgeç$"), gecmis_isler_sonuc)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ İşlemden Vazgeç$"), iptal),
-                   CommandHandler("iptal", iptal)],
+                   CommandHandler("iptal", iptal), MessageHandler(filters.Regex("^📦 Açık İşler$"), acik_isler_ve_bitir)],
     ))
 
     application.add_handler(
